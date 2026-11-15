@@ -69,6 +69,8 @@ DM_GL_STUBS	diagnostic	`=1` gives every GL function the layer lacks a stub that 
 DM_GPU_CAPTURE	diagnostic	`=<frame>[:<frames>]` or `gpu:<ms>[:<after frame>]` writes a Metal GPU trace of those frames for Xcode's Metal debugger; can be set while running through `DM_CTL`
 DM_GPU_CAPTURE_DIR	path	Folder for `DM_GPU_CAPTURE`'s traces (default `gpu_captures/` in the working directory)
 DM_GPU_CAPTURE_KEEP	diagnostic	Before each GPU capture, prunes the capture folder's `dm_*.gputrace` entries so that the newest `KEEP - 1` stay (default 2)
+DM_GUEST_BASE	diagnostic	
+DM_GUEST_CHUNKS	diagnostic	
 DM_GUEST_FILE	switch	`1` puts the guest's memory in sparse, unlinked files mapped shared over the guest block, `0` keeps it anonymous (`hle_svc.c`): file pages are out of `phys_footprint`, the figure iOS ends an app at, and the kernel can write them out when it needs the room. Unset: on iOS when the game's memory pool and half of it again, for the host's own memory (`DM_GUEST_FILE_HOST`), are larger than the room to the memory limit at start (the log's `[mem] guest memory` line says which), off on the Mac. The guest stays anonymous, with a `[RED]` line, when the files cannot be made, or the disk has less than `DM_GUEST_FILE_MIN_FREE` free (on the Mac that plus 8 GB)
 DM_GUEST_FILE_CHUNK	switch	`=<size>` (whole MB, K / M / G; default 1G, at least 64M, at most 1024 files): the size of each guest file; one file when it is not under the block's size. The stall at the system's periodic flush grows with the file (on a 16 GB M5 Mac up to 148 ms with one 20 GB file, 4 ms with 20 files of 1 GB)
 DM_GUEST_FILE_DIR	path	Folder for `DM_GUEST_FILE`'s files (default the user's temporary folder; the iOS app sets it to `NSTemporaryDirectory()`)
@@ -111,6 +113,7 @@ DM_LAUNCH_PARAM	path	File whose bytes `oe::TryPopLaunchParameter` returns once; 
 DM_LINK_VTICK	switch	`0` keeps the system's display-link rate on 144 or 165 Hz Mac screens; by default the link counts only the refreshes nearest a steady 1/60 s clock
 DM_LOADHASH	diagnostic	`=1` logs an address-independent SHA-256 per module after loading
 DM_LONGFRAME	diagnostic	`0` turns off the long-frame log (on by default), a line for a frame over 20 ms or with GPU time over 16.7 ms that is clearly above recent frames
+DM_MAP_TRACE	diagnostic	`=<bytes>` logs every MapPhysicalMemory/UnmapPhysicalMemory of at least that size with its alias offset (default 256 MB, so a title's large mappings are visible without the switch); `=0` turns it off. Use it to see an arena a game expects from a console-sized address space
 DM_MEASURE_LOCK	path	`=<file>`: `scripts/regress.py`'s default `--lock`, the measuring lock `scripts/bench.py --lock` shares: held only while a game runs, and the harness's shader builds pause while another process holds it
 DM_MEMSTAT	diagnostic	`=<tsv>` writes one line per second of memory accounting: footprint, Metal allocation and resident and charged memory by region class (guest, code, malloc, gpu, …); on iOS a relative path is under `Documents`, and `Documents/env.txt` can set it
 DM_MEMSTAT_DUMP	diagnostic	`=<seconds>`: with `DM_MEMSTAT`, at that second writes every VM region of 1 MiB or more to `<tsv>.regions`
@@ -215,7 +218,7 @@ DM_NVN_RP_AREA	switch	`0` makes passes on targets of 16 M pixels or more cover t
 DM_NVN_RT_CONTINUE	switch	`0` ends the pass whenever the game sets render targets, as before; by default SetRenderTargets naming the open pass's targets continues the pass
 DM_NVN_RT_DEAD	switch	`0` keeps every shared render target of a GPU-only pool while a texture object names it, as before; by default one another target drew over and that has not been used for 3 s is released once a second, and made again at its next use (`ab` alternates it with the `DM_AB` phases)
 DM_NVN_RT_RECYCLE	switch	`0` makes each render target in a GPU-only pool, each feedback snapshot and each resolution family heap its own exact Metal allocation, freed with its texture, as before; by default they are placed in heaps from one free list, and a freed one's heap waits, resident, for the next texture it fits (`ab` alternates it with the `DM_AB` phases)
-DM_NVN_SHDUMP	diagnostic	`=<dir>` saves programs missing from the shader map as `<key>.ctl` (control section) and `<key>.code`, to find the files that hold them
+DM_NVN_SHDUMP	diagnostic	`=<dir>` folder for the control section and code area of every shader missing from the map (default `shdump`, so a run always records what it asked for; `=0` turns it off)
 DM_NVN_SHMAP	path	The shader map (`shader_map.tsv`); `c1_full.tsv` and `pso_manifest.tsv` are taken from the same folder. Default: the game profile's folder on the Mac; the iOS app sets it
 DM_NVN_SHOT	diagnostic	`=<frame>[,<frame>…]:<path>` saves the swapchain texture as an image at those frames (`%d` in the path = frame number); a window the game crops is saved as presented (the crop drawn at the texture's own size)
 DM_NVN_SHOT_OUT	diagnostic	`=<W>x<H>` makes `DM_NVN_SHOT` capture the picture as the present pass upscales it to that size, the crop included, instead of the raw swapchain texture

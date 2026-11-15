@@ -13,6 +13,13 @@
 #include <time.h>
 #include <stdatomic.h>
 #include <mach/mach.h>
+#if TARGET_OS_IPHONE
+// The iOS SDK ships mach/mach_vm.h as "unsupported", but the mach traps are in libSystem: declare them.
+extern kern_return_t mach_vm_allocate(vm_map_t, mach_vm_address_t *, mach_vm_size_t, int);
+extern kern_return_t mach_vm_deallocate(vm_map_t, mach_vm_address_t, mach_vm_size_t);
+#else
+#include <mach/mach_vm.h>
+#endif
 #include <TargetConditionals.h>
 #include <CoreFoundation/CoreFoundation.h>   // the volume's free space with what the system can purge (guest_file_free_important)
 #if TARGET_OS_IPHONE
@@ -314,6 +321,7 @@ static void guest_file_init(void) {
 
 static void *alias_windows_thread(void *arg);
 static void *regions_thread(void *arg);
+static int verbose_mem(void) { const char *e = getenv("DM_GUEST_CHUNKS"); return e && *e; }
 static void mem_init_once(void) {
     size_t pg = (size_t)getpagesize();
     if (RESERVE < 0x10000000 || DM_GAME_MEM_ALIAS > RESERVE - 0x10000000 ||
@@ -331,8 +339,40 @@ static void mem_init_once(void) {
     const char *as = getenv("DM_ALIAS_SIZE");
     if (as && *as) { alias = (size_t)strtoull(as, NULL, 0); if (alias < 0x10000000 || (alias & (pg - 1))) die("DM_ALIAS_SIZE %s: at least 256 MB, in whole host pages", as); }
     g_reserve = RESERVE - DM_GAME_MEM_ALIAS + alias;
-    g_as = mmap(NULL, g_reserve, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (g_as == MAP_FAILED) die("reserve guest AS");
+    // DM_GUEST_BASE=<hex>: place the block at that address (a diagnostic: some titles tag pointers in the high bits and
+    // behave differently when the block lands low, which is what a phone-sized block does).
+    const char *gb = getenv("DM_GUEST_BASE");
+    g_as = gb && *gb ? mmap((void *)(uintptr_t)strtoull(gb, NULL, 16), g_reserve, PROT_NONE,
+                            MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0)
+                     : mmap(NULL, g_reserve, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    // iOS caps ONE reservation at 6 GB without the extended-virtual-addressing entitlement, but a game's block can need more
+    // (Mina the Hollower asks for an address region wider than 16 GB at boot, and 16 GB of alias aborts while 20 GB runs). The
+    // cap is per mapping, so fall back to contiguous chunks: mach_vm_allocate with VM_FLAGS_FIXED fails on an occupied range
+    // instead of clobbering it, which MAP_FIXED would.
+    if (g_as == MAP_FAILED || (getenv("DM_GUEST_CHUNKS") && *getenv("DM_GUEST_CHUNKS"))) {
+        if (g_as != MAP_FAILED) { munmap(g_as, g_reserve); g_as = MAP_FAILED; }
+        size_t chunk = (size_t)4 << 30;
+        for (; chunk >= 0x20000000 && g_as == MAP_FAILED; chunk >>= 1) {
+            size_t step = (g_reserve + ((size_t)4 << 30) - 1) & ~(((size_t)4 << 30) - 1);
+            for (mach_vm_address_t cand = 0x1000000000ull; cand < 0x7F00000000ull && g_as == MAP_FAILED; cand += step) {
+                mach_vm_address_t at = cand;
+                mach_vm_size_t n0 = g_reserve < chunk ? g_reserve : chunk;
+                if (mach_vm_allocate(mach_task_self(), &at, n0, VM_FLAGS_FIXED) != KERN_SUCCESS) continue;   // fails on an occupied range
+                mach_vm_address_t off = n0; int ok = 1;
+                for (; off < g_reserve; off += chunk) {
+                    mach_vm_address_t a2 = cand + off;
+                    mach_vm_size_t n = g_reserve - off < chunk ? g_reserve - off : chunk;
+                    if (mach_vm_allocate(mach_task_self(), &a2, n, VM_FLAGS_FIXED) != KERN_SUCCESS) { ok = 0; break; }
+                }
+                if (ok) { g_as = (void *)(uintptr_t)cand;
+                    fprintf(stderr, "[mem] reserved %.2f GB in %zu MB chunks at %p (one mapping that wide is refused here)\n",
+                            g_reserve / 1073741824.0, chunk >> 20, (void *)(uintptr_t)cand); }
+                else mach_vm_deallocate(mach_task_self(), cand, off);
+            }
+        }
+        if (g_as == MAP_FAILED)
+            die("reserve guest AS: %.3f GB not reservable even in chunks (mem_reserve %.3f GB + 1 GB alignment slack)", g_reserve / 1073741824.0, RESERVE / 1073741824.0);
+    }
     guest_file_init();
     // Fixed partition (all inside the reserved block): 256 MB in front, the heap, the stacks, then the alias region. Mario: a heap region of 1.625 GB, stack 256 MB, alias 2.875 GB.
     // The alias region is last because a Switch's addresses stay below 2^39 and a 64 GB alias region cannot: macOS 27 reserves 0x1000000000-0x7000000000, which leaves exactly 64 GB below
@@ -1035,6 +1075,61 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         }
         if (commit && changed) alias_initialize(off, size);
         if (g_flag.svc) LOG("%sPhysicalMemory %p+%#zx", commit ? "Map" : "Unmap", (void *)a, size);
+        // DM_MAP_TRACE=<bytes>: every map/unmap of at least that size with the guest caller, for finding what a title puts in the
+        // alias region (a game that maps tens of GB at boot cannot fit a phone's block, and the caller is what has to be cut).
+        { static size_t lim; static int init; const char *mt = getenv("DM_MAP_TRACE");
+          // On by default at 256 MB: every large mapping a title makes is logged, so an arena it expects from a console-sized
+          // address space shows up without an env switch. DM_MAP_TRACE=0 disables, DM_MAP_TRACE=<bytes> changes the threshold.
+          if (!init) { init = 1;
+              lim = !mt ? (size_t)0x10000000 : (*mt == '0' && !mt[1]) ? 0 : (size_t)strtoull(mt, NULL, 0); }
+          if (lim && size >= lim) {
+              static int scanned;
+              LOG("[map] %s %#zx bytes at alias +%.3f GB", commit ? "map" : "unmap", size, off / 1073741824.0);
+              if (scanned < 8 && size >= 0x1000000) {   // the big maps: the chain that builds the arena
+                  scanned++;
+                  // The gate frame keeps the guest's pushed x29/x30 pointer at +792 (entry.S dm_gate), so the guest sp at the gate
+                  // block is that pointer + 16. Read it, then scan the guest stack for main returns with vm_read_overwrite, which
+                  // is safe on an unmapped page (the probe code reads guest memory the same way).
+                  // A real unwind from the guest's frame pointer (regs[29]) beats scanning: the stack holds stale pointers,
+                  // and the x29 chain is what the compiler emits. Fall back to the scan only when the chain is empty.
+                  {
+                      uint64_t fp = regs[29];
+                      char chain[700] = ""; size_t used2 = 0;
+                      for (int i = 0; fp && i < 24 && used2 < sizeof chain - 40; i++) {
+                          uint64_t pair[2]; vm_size_t got2 = 0;
+                          if (vm_read_overwrite(mach_task_self(), (vm_address_t)fp, 16, (vm_address_t)pair, &got2) || got2 != 16) break;
+                          for (int k = 0; k < g_nmod; k++) {
+                              module_t *mm2 = &g_mod[k];
+                              uint64_t base2 = (uint64_t)(uintptr_t)mm2->base;
+                              if (!base2 || pair[1] < base2 || pair[1] >= base2 + mm2->size) continue;
+                              used2 += snprintf(chain + used2, sizeof chain - used2, "%s+%#llx ", mm2->name, (unsigned long long)(pair[1] - base2));
+                              break;
+                          }
+                          if (pair[0] <= fp) break;
+                          fp = pair[0];
+                      }
+                      if (used2) LOG("[map] frame chain: %s", chain);
+                  }
+                  uint64_t pushed = 0; memcpy(&pushed, (const uint8_t *)regs + 792, 8);
+                  uint64_t sp = pushed ? pushed + 16 : 0;
+                  if (sp) {
+                      char line[700] = ""; size_t used = 0;
+                      for (int i = 0; i < 0x200; i++) {
+                          uint64_t w = 0; vm_size_t got = 0;
+                          if (vm_read_overwrite(mach_task_self(), (vm_address_t)(sp + i * 8), 8, (vm_address_t)&w, &got) || got != 8) continue;
+                          for (int k = 0; k < g_nmod; k++) {
+                              module_t *mm2 = &g_mod[k];
+                              if (!mm2->base || w < (uint64_t)(uintptr_t)mm2->base || w >= (uint64_t)(uintptr_t)mm2->base + mm2->size) continue;
+                              used += snprintf(line + used, sizeof line - used, "%s+%#llx ", mm2->name, (unsigned long long)(w - (uint64_t)(uintptr_t)mm2->base));
+                              if (used > sizeof line - 40) { i = 0x200; }
+                              break;
+                          }
+                          if (used > sizeof line - 40) break;
+                      }
+                      LOG("[map] sp=%#llx guest stack chain: %s", (unsigned long long)sp, line);
+                  }
+              }
+          } }
         // how deep the alias region is used (one line per 256 MB crossed): for sizing the reservation and alias region (iOS caps a single reservation at 6 GB)
         if (num == 0x2C) { _Atomic uint64_t *hw = &g_alias_hw; uint64_t end = off + size, old = atomic_load(hw);
             while (end > old && !atomic_compare_exchange_weak(hw, &old, end)) {}
