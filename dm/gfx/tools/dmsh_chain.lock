@@ -2,5 +2,5 @@
 dmsh_xlate	ce15b871c7dc0a2d
 xlate_source	c75f3cb403920cde
 spirv-cross	e37945d8e441d34d
-metal_macosx	Apple metal version 32023.922 (metalfe-32023.922.4)
-metal_iphoneos	Apple metal version 32023.922 (metalfe-32023.922.4)
+metal_macosx	Apple metal version 32023.921 (metalfe-32023.921.6)
+metal_iphoneos	Apple metal version 32023.921 (metalfe-32023.921.6)
