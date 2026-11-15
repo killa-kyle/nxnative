@@ -350,6 +350,22 @@ static void mem_init_once(void) {
     if (!(g_alias_exposed = calloc(g_alias_cap / pg / 64 + 1, sizeof *g_alias_exposed))) die("alias exposure bitmap calloc");
     if (!(g_alias_rel = calloc(g_alias_cap / pg / 64 + 1, sizeof *g_alias_rel)) || !(g_alias_aged = calloc(g_alias_cap / pg / 64 + 1, sizeof *g_alias_aged))) die("alias release bitmap calloc");
     LOG("guest AS %p +%#llx  heap %p alias %p stack %p", g_as, (unsigned long long)g_reserve, g_heap, g_alias, g_stack);
+    // DM_MEM_TRACE: the address-space budget in one line, plus the pool window an Unreal engine fills. Three numbers decide
+    // whether a profile works on a phone: the reservation (g_reserve + 1 GB of alignment slack) against iOS's 6 GB cap, the
+    // alias region against the engine's own address region, and the pool window (game_args -SwitchVirtualAddressSpaceSize)
+    // against the alias -- a window wider than the alias cannot be served, and the engine reports "Ran out of memory
+    // allocating" with the *window span* in the message, never the request.
+    if (getenv("DM_MEM_TRACE")) {
+        long win = 0; const char *p = strstr(DM_GAME_ARGS "-", "-SwitchVirtualAddressSpaceSize=");
+        if (p) win = strtol(p + 31, NULL, 10);
+        double r = g_reserve / 1073741824.0, a = g_alias_cap / 1073741824.0, st = g_stack_cap / 1073741824.0, h = g_heap_cap / 1073741824.0;
+        LOG("[mem] budget: guard 0.25 + heap %.3f + stack %.3f + alias %.3f = reserve %.3f GB; mmap %.3f GB of the 6 GB iOS cap (%.3f GB spare)",
+            h, st, a, r, (g_reserve + ((size_t)1 << 30)) / 1073741824.0, 6.0 - (g_reserve + ((size_t)1 << 30)) / 1073741824.0);
+        if (win > 0)
+            LOG("[mem] pool window %ld MB (%.3f GB) from game_args: the engine's own allocations must fit in it, and it must fit in the %.3f GB alias region%s",
+                win, win / 1024.0, a, win / 1024.0 > a ? " -- IT DOES NOT" : "");
+        if (a < 4.0) LOG("[mem] alias under 4 GB: an Unreal engine's AllocateAddressRegion(0xfe000000) does not fit beside the SDK's node area");
+    }
     if ((uint64_t)(uintptr_t)g_alias > UINT64_C(1) << 39) LOG("[mem] the heap and stacks reach past 2^39, which a Switch's addresses never do: a crash on a cut-off pointer points here (DM_ALIAS_SIZE=<profile's mem_alias> keeps them lower)");
     const char *aw = getenv("DM_ALIAS_WINDOWS");
     if (aw && atoi(aw) > 0) { pthread_t th; if (!pthread_create(&th, NULL, alias_windows_thread, (void *)(uintptr_t)atoi(aw))) pthread_detach(th); }
@@ -1022,7 +1038,10 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         // how deep the alias region is used (one line per 256 MB crossed): for sizing the reservation and alias region (iOS caps a single reservation at 6 GB)
         if (num == 0x2C) { _Atomic uint64_t *hw = &g_alias_hw; uint64_t end = off + size, old = atomic_load(hw);
             while (end > old && !atomic_compare_exchange_weak(hw, &old, end)) {}
-            if (end > old && end >> 28 != old >> 28) LOG("[mem] alias region mapped up to +%.2f GB (alias region %.2f GB)", end / 1073741824.0, g_alias_cap / 1073741824.0); }
+            if (end > old && end >> 28 != old >> 28) LOG("[mem] alias region mapped up to +%.2f GB of %.2f GB (%.0f%%), %.2f GB left",
+                                                         end / 1073741824.0, g_alias_cap / 1073741824.0,
+                                                         g_alias_cap ? 100.0 * end / g_alias_cap : 0.0,
+                                                         (g_alias_cap > end ? (g_alias_cap - end) : 0) / 1073741824.0); }
         // Total actually mapped in the alias region (one line per 256 MB crossed, up or down): how much physical memory the game uses and whether it keeps growing. Counted with a page bitmap, only pages whose state really changed --
         // the SDK maps pages that are already mapped and unmaps ranges larger than what it mapped (Engage unmaps 0x1000000 and then 0x103f000 at the same address), so counting requested sizes went negative
         { int64_t d = alias_pages(off, size, commit) * 4096, before = atomic_fetch_add(&g_alias_mapped, d), after = before + d;

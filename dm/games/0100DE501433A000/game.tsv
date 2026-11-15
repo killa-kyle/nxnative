@@ -1,0 +1,44 @@
+# Tetris Effect: Connected, SDK 13 (nnSdk-13_3_2), Unreal Engine 4.27 (see README.md for what was measured on it)
+
+# ---- Identity ----
+title_id	0100DE501433A000
+program_id	0100DE501433A000
+
+# ---- App ----
+name	Tetris Effect Connected
+ipa	TetrisEffectConnected.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v1179648	2.0.2	main=95c56ff872c4f6d85ef97724dcd0b6e9	subsdk0=a8cb97803f7f442a3b6cce1c7cd4ee4a	sdk=357efc198e728cb5d55265aff304f03c
+package	v1179648
+shader_versions	v1179648
+
+# ---- Files ----
+game_args	-SwitchVirtualAddressSpaceSize=3072
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	TetrisEffect/Content/Paks/TetrisEffect-Switch.pak
+zip_store	.mp4:.nro:.pak:.ucas:.metallib
+
+# ---- Memory ----
+# Unreal 4.27: nninitStartup reserves the profile's address region (game_args, MB) and the engine's own allocations fill it; at
+# 2048 the window (base..base+0x80000000) was at 100.7% by frame 300 and the next 16 MB request aborted with Unreal's
+# "Ran out of memory allocating %llu bytes" (the number printed is the window span, not the request). 3072 is the next whole-GB
+# value the engine accepts (2304 died in nninitStartup). Its own AllocateAddressRegion(0xfe000000) needs an alias wider than
+# 4 GB beside the SDK's node area: 4 GB failed at init, 4.0625 GB works. The block is reserve + 1 GB of alignment slack against
+# iOS's 6 GB reservation cap, so 4.875 GB is the widest that still signs and runs on a phone (5.5 GB dies in mem_init).
+# The FMallocBinned3 cut and the host allocator are in patches.py / hle_uemalloc.c. See docs/reference/memory.md, and check a
+# profile's budget with python3 dm/tools/check_memory.py <title id>.
+mem_reserve	0x138000000
+mem_alias	0x104000000
+mem_stack	0x4000000
+app_pool	0xCD500000
+# the NPDM declares 80 MB of system resource
+sys_resource	0x5000000
+mem_used	0x1000000
+
+# ---- Shader split ----
+# the decoded shader code archives: the engine's global shaders and the game's material shaders
+shader_groups	ShaderArchive-Global-=global ShaderArchive-=game
+shader_note	Tetris Effect Connected shaders (provisional profile)

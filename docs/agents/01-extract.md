@@ -11,6 +11,7 @@
 
 - Dumped `prod.keys` files may contain malformed lines (seen: 33 `*master_kek_source_*` lines with the wrong length) that make hactool refuse the whole file. Drop lines whose value length is wrong for the key type; keep a backup of the original.
 - Title key: the NSP carries `<rights id>.tik`. For a common ticket the encrypted title key is the first 16 bytes of the title-key block at 0x180; append `<rights id> = <key hex>` to `title.keys`. Never print the value.
+- A dump can be too old for a title: `MissingKeyException ... Key Name: key_area_key_application_15` means the console's key revision predates the game's (`key_area_key_application_N` follows firmware). Check coverage without printing secrets (`grep -o "^key_area_key_application_[0-9]*" prod.keys | sort -t_ -k4 -n | tail -3`); the fix is a re-dump on a console whose firmware covers the generation, never a downloaded key file — [switch-homebrew-recovery](../../.agents/skills/switch-homebrew-recovery/SKILL.md) has the CFW side.
 
 ## NSP → NCA → ExeFS / RomFS
 
