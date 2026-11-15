@@ -1,14 +1,14 @@
 ---
 name: nxnative-title-bringup
-description: Bring a newly extracted Switch title up in nxnative and get real pixels. Covers the default-on shader capture loop (run → harvest → build → verify), why a frame counter is not a rendered frame, and the attribution traps. Use after scripts/build_ipa_from_nsp.py has produced a provisional profile and the host boots to nninitStartup or the frame loop, and whenever a run logs "shader ... is not in the shader map".
+description: Bring a newly extracted Switch title up in nxnative and get real pixels. Covers the shader capture loop (run → harvest → build → verify), why a frame counter is not a rendered frame, and the attribution traps. Use after scripts/build_ipa_from_nsp.py has produced a provisional profile and the host boots to nninitStartup or the frame loop, and whenever a run logs "shader ... is not in the shader map".
 ---
 
 # nxnative title bring-up
 
 Start with the asset inventory in docs/agents/04-graphics.md. Capture shader
-variants from representative routes to fill gaps in the shipped archives. The iOS
-host captures missing shaders in Documents/shdump by default. On the Mac, set
-DM_NVN_SHDUMP to a capture folder on the project SSD.
+variants from representative routes to fill gaps in the shipped archives. Set
+DM_NVN_SHDUMP=shdump on iOS to capture under Documents. On the Mac, point it
+at a capture folder on the project SSD.
 
 ## The loop
 

@@ -6594,17 +6594,8 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
             if (b) { o->sh[5] = b; continue; }
             MLOG("[RED] shader %s is not in the shader map (DM_NVN_SHDUMP=directory saves its control section and code area)", k.UTF8String);
             // DM_NVN_SHDUMP=directory: shaders missing from the map are saved as <key>_s<stage>.ctl (the control section's key bytes) and <key>_s<stage>.code (code area, nvn_ctl_lens; the stage is the map's column and is not in the bytes), to trace their source / add them to the map offline
-            static const char *shd; static int shd_init; if (!shd_init) { shd_init = 1; const char *e0 = getenv("DM_NVN_SHDUMP");
-                // On iOS, capture by default under Documents. Mac runs opt in with a work-folder path.
-                // DM_NVN_SHDUMP=0 turns it off, DM_NVN_SHDUMP=<dir> chooses the folder.
-                shd = (e0 && *e0 == '0' && !e0[1]) ? NULL : (e0 && *e0 ? e0 :
-#if TARGET_OS_IPHONE
-                    "shdump"
-#else
-                    NULL
-#endif
-                );
-                if (shd) mkdir(shd, 0777); }   // create the dump folder: a missing one made every fopen fail silently
+            const char *shd = nvn_shader_dump_dir();
+            if (shd) mkdir(shd, 0777);
             if (shd) { char path[1024]; FILE *f; uint32_t ncode, nctl; nvn_ctl_lens(p->sd[i].control, &nctl, &ncode);   // with SHDUMP set the control section is the host's copy
                 snprintf(path, sizeof path, "%s/%s_s%u.ctl", shd, k.UTF8String, i); if ((f = fopen(path, "wb"))) { fwrite(p->sd[i].control, 1, nctl, f); fclose(f); }
                 snprintf(path, sizeof path, "%s/%s_s%u.code", shd, k.UTF8String, i);
