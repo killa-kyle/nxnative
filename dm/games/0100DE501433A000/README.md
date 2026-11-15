@@ -31,7 +31,7 @@ No `sdk` cuts: with the engine region capped, SDK 13's node area fits in the ali
 ## Shaders
 
 - 161 keys translated from `DM_NVN_SHDUMP` captures (217 iOS Metal libraries). The pak index is encrypted (AES-256-ECB, key GUID 0, and the key is provably absent from `main`, `sdk`, `subsdk0` and `rtld`), so offline extraction is ruled out; the shaders are inline in the unencrypted `.ucas` but their keys are not. The capture loop is the source.
-- **Open:** one key, `5b3b9e21f1c1bb85`, has no mapping (`[RED] shader … is not in the shader map`), first requested in play after the save mount. Nothing visible was lost in the session tested; it needs a re-capture with the gameplay that requests it.
+- **Open: a black screen was reported in MAX mode on the Duo.** The 2.0.2 host loaded the 161-entry map and logged 27 distinct unmapped shader keys across the session. Eight first appeared together around frame 23102, including `ac1fe807a7c1d138` and `c7cc758af4959c62`. None of the 27 keys is in the rebuilt 161-entry offline inventory. The host continued submitting draws after this burst. Recapture the same MAX route with `DM_NVN_SHDUMP` enabled, merge the resulting control/code pairs into the offline inventory, then verify the same route on the Duo.
 
 ## Input
 
@@ -39,6 +39,6 @@ On the Mac the host maps it directly: `DM_KEYS` — J = A, K = B, U = X, I = Y, 
 
 ## What is open
 
-- The one unmapped shader above.
+- Capture and translate the missing shaders from MAX mode, then replay it on the Duo.
 - A playthrough beyond the menus: 7200 frames cover the boot, the save mount and the first minutes of play, not every Effects mode, the multiplayer or the Journey mode.
 - The engine's 3 GB window is what a 4.875 GB block allows with a 4.0625 GB alias; a later scene that maps more than 3 GB of engine region would need [The SDK's address-region node area](../../../docs/reference/memory.md#the-sdks-address-region-node-area) cut to buy the alias room, as Pokémon Legends: Z-A's profile does.
