@@ -31,6 +31,10 @@ targets:
       properties:
         CFBundleDisplayName: ${DM_DISPLAY_NAME}   # the game name in the base NSP (set by build_ipa.sh)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleURLTypes:
+          - CFBundleURLName: ${DM_BUNDLE_ID}.kylecade
+            CFBundleURLSchemes: [${DM_LAUNCH_SCHEME}]
+            CFBundleTypeRole: Viewer
         CFBundleShortVersionString: $(MARKETING_VERSION)
         UILaunchScreen: {}
         UIFileSharingEnabled: true          # Documents (log.txt, saves) visible in the Files app
