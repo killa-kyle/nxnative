@@ -2274,6 +2274,10 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
         for setting, folder, pattern in (('DM_GLSLC_CAPTURE', 'glslc_capture', '*.glslc'), ('DM_UE_SHADERS', 'ue_shaders', '*.ushaderbytecode')):
             capture = Path(env.get(setting) or r.parent / folder)
             inputs += [('stat', capture) if provisional else ('files', sorted(capture.glob(pattern)))]   # its files, not where it is: the same build reached through a moved folder or a link keeps its split
+    for capture in filter(None, env.get('DM_NVN_CAPTURE_DIRS', '').split(os.pathsep)):
+        root = Path(capture)
+        if not root.is_dir(): raise BuildError(f'NVN capture directory does not exist: {root}')
+        inputs += [('files', sorted(p for p in root.iterdir() if p.is_file() and p.suffix in ('.ctl', '.code') and not p.name.startswith('._')))]
     if env.get('DM_NRO_DIR'): inputs += [('files', sorted(Path(env['DM_NRO_DIR']).glob('*.nro')))]   # NROs captured from a boot (capture_nro)
     inputs += [item for r in dlc_roms for item in (('dlc', Path(r).name), ('stat', r))]   # DLC has no registered module build to pin its contents: include its index and re-extraction times, even when file sizes stay the same
     if oodle:   # a host or rewriter fix can change what the game's decoder produces
@@ -3097,6 +3101,9 @@ def parse_args(argv):
                     'and bundle them with the app after the pipeline archive, so its first start builds none (Ocarina of Time: about 6,400 bases, 450-475 s on an M5 Max at the first start); minutes to hours when its inputs changed and '
                     'about 1.3 GB more app for such a list, made again only when its inputs change; needs the pipeline archive for this Mac\'s GPU; the other GPUs --gpu names get theirs from the host\'s pipelines scripts through metal-tt; '
                     '--no-prebake: the app builds them on its first start (default: the PREBAKE setting, on)')
+    ap.add_argument('--nvn-capture', action='append', default=[], metavar='DIR',
+                    help='merge captured NVN .ctl/.code pairs into the static inventory before compiling shaders; repeat for multiple capture routes. '
+                         'Use a provisional profile to bring up a new title or to review additions to a registered build.')
     ap.add_argument('--seen-shaders', action=argparse.BooleanOptionalAction, help='--platform mac or mac-app: build only the shaders the profile\'s playtests used (its shader_seen.tsv) and those the last runs\' logs reported missing, not the whole map: '
                     'minutes instead of hours, but areas the list does not cover draw without the rest until this runs again (default: the SEEN_SHADERS setting, off)')
     ap.add_argument('--show-fps', action=argparse.BooleanOptionalAction, help='show the game\'s frame rate on the iPhone, frames on screen per second at the top left (default: the SHOW_FPS setting, on)')
@@ -3253,6 +3260,11 @@ def main(args=None):
     want_lang = language_code(lang_in) if lang_in else 'en-US'
     if not want_lang: raise BuildError(f'unknown game language {lang_in!r}; give one of {language_list([c for c, _ in nacp.LANGUAGES])}, by code or by name')
     env = tool_env()
+    if args.nvn_capture:
+        captures = [Path(path).expanduser().resolve() for path in args.nvn_capture]
+        for capture in captures:
+            if not capture.is_dir(): raise BuildError(f'--nvn-capture directory does not exist: {capture}')
+        env['DM_NVN_CAPTURE_DIRS'] = os.pathsep.join(map(str, captures))
     env.setdefault('USER', getpass.getuser())   # xcodegen fails without USER (Couldn't find current username)
     env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)
     py = sys.executable
@@ -3374,6 +3386,7 @@ def main(args=None):
     # how the shaders are got follows from the packed version's files (profile_guess.py shader_sources): the graphics API, and the shaders made only at run time
     src = pg.build_sources(game / 'ExeFS', rfs.source(game), g.modules_in(game / 'ExeFS'))
     gfx = src['graphics'][0]   # nvn, vulkan (Hades: the host's Vulkan layer, SPIR-V shaders) or gl (Digimon Story Cyber Sleuth: the host's GL layer, GLSL sources)
+    if gfx != 'nvn' and env.get('DM_NVN_CAPTURE_DIRS'): raise BuildError('--nvn-capture requires an NVN game')
     glslc = gfx == 'nvn' and src['glslc_capture'][0]   # shaders the game compiles at run time, captured in the Mac host (capture_glslc)
     vkcap = gfx == 'vulkan' and src['vk_capture'][0]   # SPIR-V shaders the game generates at run time, captured in the Mac host (capture_shaders)
     glcap = gfx == 'gl' and src['gl_capture'][0]   # GLSL the game puts together at run time (LÖVE), captured in the Mac host (capture_shaders)

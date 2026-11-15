@@ -3489,12 +3489,53 @@ def scan_file(args):
         print(f'[RED] {why} (its shaders are left out)', flush=True)
         return args[1], {}, set(), ('unreadable', why, 1)
 
+YCD8 = b'YCD\0\x08\0\0\0'
+
+
+def ycd_shaders(data, label):
+    """Read the uncompressed NVN records in Yacht Club's v8 shaders.pak.yc.
+
+    Each observed shader is stored as two little-endian lengths, then its
+    control section and code area. Require the lengths to agree with the
+    control header before accepting an embedded magic as a record.
+    """
+    found = []
+    for m in re.finditer(re.escape(CTL_MAGIC), data):
+        at = m.start()
+        if at < 8 or at + 0x708 > len(data):
+            continue
+        ctl_size, code_size = struct.unpack_from('<II', data, at - 8)
+        declared_ctl = struct.unpack_from('<I', data, at + 0x20)[0]
+        declared_code = struct.unpack_from('<I', data, at + 0x704)[0]
+        if ctl_size < 0x760 or ctl_size != declared_ctl or not code_size or code_size != declared_code:
+            continue
+        code_at = at + ctl_size
+        end = code_at + code_size
+        if end > len(data):
+            red(f'{label}: shader at {at:#x} ends past the archive')
+        ctl, code = data[at:code_at], data[code_at:end]
+        where = f'{label}#YCD@{at - 8:#x}'
+        stage = glslc_stage(ctl, code)
+        why = check(where, stage, ctl, code) if stage else 'unknown NVN shader stage'
+        if why:
+            red(f'{where}: {why}')
+        found.append((where, stage, ctl, code))
+    if not found:
+        red(f'{label}: no length-checked NVN records in the YCD v8 shader archive')
+    return found
+
+
 def scan_file_in(args):
     path, rel = args[:2]
     stem, ext = os.path.splitext(path)
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
     found = []; trees = {}
+    if head[:8] == YCD8 and os.path.basename(rel).lower() == 'shaders.pak.yc':
+        from romfs import mmap
+        with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            found = ycd_shaders(data, '/' + rel)
+        return rel, uniq_keys(found), set(), trees
     if len(args) > 2 and args[2][0] == LSPK:
         if args[2][1] is None: red(args[2][2])
         lspk_shaders(args[2][1], rel, found)
@@ -3673,6 +3714,38 @@ def pooled(ex, jobs, total, start=0, chunk=1):
     return [r for f in futures for r in f.result()]
 
 
+def captured_nvn_shaders():
+    """Read host shader dumps into the same inventory as static readers."""
+    rows = []
+    for root in filter(None, os.environ.get('DM_NVN_CAPTURE_DIRS', '').split(os.pathsep)):
+        if not os.path.isdir(root): red(f'NVN capture directory does not exist: {root}')
+        with os.scandir(root) as entries:
+            files = sorted(e.path for e in entries if e.is_file() and not e.name.startswith('._'))
+        pairs = collections.defaultdict(set)
+        for path in files:
+            stem, ext = os.path.splitext(path)
+            if ext in ('.ctl', '.code'):
+                pairs[stem].add(ext)
+        for stem, kinds in sorted(pairs.items()):
+            name = os.path.basename(stem)
+            match = re.fullmatch(r'([0-9a-f]{16})(?:_s[0-7])?', name)
+            if not match:
+                red(f'NVN capture {name}: expected a shader key with an optional stage suffix')
+            if kinds != {'.ctl', '.code'}:
+                red(f'NVN capture {name}: missing its control section or code area')
+            with open(stem + '.ctl', 'rb') as f: ctl = f.read()
+            with open(stem + '.code', 'rb') as f: code = f.read()
+            if not nvn2_ctl(ctl) and len(ctl) < 0x708: red(f'NVN capture {name}: truncated control section')
+            stage = glslc_stage(ctl, code)
+            if stage not in STAGE_NAME: red(f'NVN capture {name}: unknown stage')
+            why = check(name, stage, ctl, code)
+            if why: red(f'NVN capture {name}: {why}')
+            key = skey(ctl, code)
+            if key != match[1]: red(f'NVN capture {name}: content key is {key}; check the game profile and capture data')
+            rows.append((name, {key: (f'#DUMP@{key}', stage, ctl, code)}, set(), {}))
+    return rows
+
+
 def main():
     romfs_l, main_l, pkg, mapout, factsout = sys.argv[1:6]
     pairsout = sys.argv[6] if len(sys.argv) > 6 else None
@@ -3758,7 +3831,7 @@ def main():
         results = [r for r in results if r[3] != 'defer'] + again
     bad = [extra for *_, extra in results if isinstance(extra, tuple)]
     if bad: print(f'[RED] {sum(e[2] for e in bad)} file(s) could not be read, their shaders are left out (first: {bad[0][1]})', flush=True)   # build_ipa_from_nsp.py reads this line
-    keys, pairs, per_src = merge_keys(results)
+    keys, pairs, per_src = merge_keys(results + captured_nvn_shaders())
     prog = {(a, b) for a, b, *t in pairs if t} - pairs; pairs = {x for x in pairs if len(x) == 2}
     sp, cover = separable_pairs(keys); pairs |= sp
     if cover: print(f'single-stage programs: {len({v for v, _ in sp}):,} vertex shaders are paired with a cover of {len(cover)} pixel shader(s) ({" ".join(cover)})')
@@ -3789,7 +3862,7 @@ def main():
                                             ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)),
                                             ('Snowdrop shader objects', any('#SNOWDROP@' in r[4] for r in rows)),
                                             ('Larian BSHD', any('#BSHD#' in r[4] for r in rows)),
-                                            ('Needle', any('#NEEDLE@' in r[4] for r in rows)),
+                                            ('Yacht Club YCD', any('#YCD@' in r[4] for r in rows)), ('Needle', any('#NEEDLE@' in r[4] for r in rows)),
                                             ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows))) if hit)
         f.write(f'# kind: evidence  {NOTE} ({kinds} in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)\n')
         f.write('# column 5 records where each key first appears, a copy in the game before one in an add-on; no PC shader pairing supplied\n')
