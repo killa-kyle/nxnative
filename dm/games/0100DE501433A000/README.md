@@ -30,8 +30,19 @@ No `sdk` cuts: with the engine region capped, SDK 13's node area fits in the ali
 
 ## Shaders
 
-- 161 keys translated from `DM_NVN_SHDUMP` captures (217 iOS Metal libraries). The pak index is encrypted (AES-256-ECB, key GUID 0, and the key is provably absent from `main`, `sdk`, `subsdk0` and `rtld`), so offline extraction is ruled out; the shaders are inline in the unencrypted `.ucas` but their keys are not. The capture loop is the source.
-- **Open: a black screen was reported in MAX mode on the Duo.** The 2.0.2 host loaded the 161-entry map and logged 27 distinct unmapped shader keys across the session. Eight first appeared together around frame 23102, including `ac1fe807a7c1d138` and `c7cc758af4959c62`. None of the 27 keys is in the rebuilt 161-entry offline inventory. The host continued submitting draws after this burst. Recapture the same MAX route with `DM_NVN_SHDUMP` enabled, merge the resulting control/code pairs into the offline inventory, then verify the same route on the Duo.
+- The original iOS cache has 161 keys from `DM_NVN_SHDUMP` captures. The
+  companion pak has an encrypted index. Its IoStore TOC and export payload
+  are readable and contain inline NVN records in 10,271 export bundles.
+- Run `DM_GAME=0100DE501433A000 python3 dm/gfx/tools/ue_iostore_inventory.py OUT TetrisEffect-Switch.utoc global.utoc`
+  with the TOCs alongside their UCAS files. The catalog records shader key,
+  stage, source chunk ID and decoded offset. `OUT/pairs` feeds
+  `DM_NVN_CAPTURE_DIRS` in the existing splitter. For overlaps, use the
+  packaged pair and include only capture keys absent from the static export.
+- Measured on 2.0.2 v1179648: 10,353 static keys, 97 also seen in the original
+  captures, and 10,417 unique keys after merging. Of 27 misses logged in the
+  Duo session that included the MAX black screen, the static inventory covers
+  24. The remaining keys are `1921216ef271df11`, `1b2697f3af11e908` and
+  `b7002d5fe1056091`. Coverage outside the scanned export bundles remains open.
 
 ## Input
 
@@ -39,6 +50,6 @@ On the Mac the host maps it directly: `DM_KEYS` — J = A, K = B, U = X, I = Y, 
 
 ## What is open
 
-- Capture and translate the missing shaders from MAX mode, then replay it on the Duo.
+- Resolve the three outstanding session keys and rebuild the full merged cache. Verify the MAX route on the Duo.
 - A playthrough beyond the menus: 7200 frames cover the boot, the save mount and the first minutes of play, not every Effects mode, the multiplayer or the Journey mode.
 - The engine's 3 GB window is what a 4.875 GB block allows with a 4.0625 GB alias; a later scene that maps more than 3 GB of engine region would need [The SDK's address-region node area](../../../docs/reference/memory.md#the-sdks-address-region-node-area) cut to buy the alias room, as Pokémon Legends: Z-A's profile does.
