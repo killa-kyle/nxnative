@@ -10,5 +10,6 @@
 ## English localization
 
 - The base game's control metadata advertises Japanese only. The Unreal engine and OnlineSubsystem plugins ship English localization resources. The pak indexes contain no game-specific `.locres` or `.locmeta` files.
+- A scan of chunk 1 found 3,598 candidate length-prefixed UTF-16 Japanese strings across 173 cooked Blueprint and data table export files. These are candidate occurrences, including duplicates and possible internal text. A patch needs to preserve Unreal export sizes and offsets, or use the runtime text loader once the text serialization path is confirmed.
 - The game has cooked UI widgets and menu artwork, including a Yamanote tutorial selection card. Inventory the cooked text fields and the textures backing those screens before choosing how to replace them. CRIWARE audio and USM video are separate assets and need their own coverage check for spoken prompts and embedded captions.
 - Verify title and main menus, settings, tutorials, mission selection, and one route through its results screen before marking an English build playable. Keep the translation tied to the tested game version and keep game assets in the local work folder.
