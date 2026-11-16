@@ -2056,6 +2056,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** Route integer attributes through the existing vertex-array binding and unnormalized Metal integer formats. Apply the base instance to the vertex data offsets of instanced attributes so the shader still sees a zero-based `gl_InstanceID`. [Khronos OpenGL reference](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glDrawArraysInstancedBaseInstance.xhtml)
 - **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac regression reads back pixels that depend on exact 16-bit integer values, an instance offset with divisor 2, and the shader-visible instance ID. Post-fix Duo gameplay remains unverified.
 
+### Packed OpenGL atlas copies
+
+- **Symptom:** Factorio loads its initial atlases and exits while loading 3D bitmaps. The log shows that `RGBA32UI` and `RG32UI` textures could not be made.
+- **Cause:** The 2D atlas path calls an unresolved `glCopyImageSubData` at `main+0x94ad98`. The OpenGL layer also lacked the unsigned integer texture formats and the `usampler2D` reflection type used by the atlas shaders.
+- **Fix:** Allocate the unsigned integer formats and bind integer 2D samplers. Use a Metal blit for 2D images with matching formats and byte-preserving texture-to-buffer blits when each integer texel represents a compressed block. [Khronos OpenGL reference](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glCopyImageSubData.xhtml)
+- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac regression copies packed data through a BC1 texture and verifies its bytes after readback. Post-fix Duo gameplay remains unverified.
+
 ### GL textures, swizzles and uploads
 
 - Textures are made on first use from the levels given so far (Digimon's loader defines them level by level). An upload into a texture a pending command buffer may still read is a blit in command order; any other is a CPU write. Metal reads a channel a format lacks as 0 (alpha 1) as GL does, so only luminance / alpha formats get a swizzle: Metal refuses a swizzle on a texture that can be a render target (`Texture swizzling is not compatable with MTLTextureUsageRenderTarget`, Digimon's first story scene).

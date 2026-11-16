@@ -394,6 +394,28 @@ static void test_multiple_color_attachments(void) {
     h_glUseProgram(0); h_glDeleteProgram(name);
     h_glBindFramebuffer(GL_FRAMEBUFFER, 0); h_glDeleteFramebuffers(1, &fb); h_glDeleteTextures(2, tex);
 }
+static void test_packed_image_copy(void) {
+    assert(import("glCopyImageSubData") == (void *)h_glCopyImageSubData);
+    if (!g_dev.supportsBCTextureCompression) return;
+    assert(tcode("usampler2D") == T_USAMP2D && is_samp(T_USAMP2D));
+    assert(g_tenums[T_USAMP2D] == GL_UNSIGNED_INT_SAMPLER_2D && g_utex0.pixelFormat == MTLPixelFormatRGBA32Uint);
+    GLuint textures[3]; h_glGenTextures(3, textures);
+    const uint32_t packed[] = {0x12345678, 0x9abcdef0, 0x76543210, 0xfedcba98};
+    h_glBindTexture(GL_TEXTURE_2D, textures[0]);
+    h_glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32UI, 2, 1, 0, 0x8228, GL_UNSIGNED_INT, packed);
+    h_glBindTexture(GL_TEXTURE_2D, textures[1]);
+    h_glTexStorage2D(GL_TEXTURE_2D, 1, GL_COMPRESSED_RGBA_S3TC_DXT1, 12, 4);
+    h_glBindTexture(GL_TEXTURE_2D, textures[2]);
+    h_glTexStorage2D(GL_TEXTURE_2D, 1, GL_RG32UI, 2, 1);
+    h_glCopyImageSubData(textures[0], GL_TEXTURE_2D, 0, 0, 0, 0, textures[1], GL_TEXTURE_2D, 0, 4, 0, 0, 2, 1, 1);
+    h_glCopyImageSubData(textures[1], GL_TEXTURE_2D, 0, 4, 0, 0, textures[2], GL_TEXTURE_2D, 0, 0, 0, 0, 8, 4, 1);
+    id<MTLCommandBuffer> cb = cb_get(); cb_commit(); [cb waitUntilCompleted];
+    assert(cb.status == MTLCommandBufferStatusCompleted && h_glGetError() == GL_NO_ERROR);
+    uint32_t out[4];
+    [tex_of(textures[2])->tex getBytes:out bytesPerRow:sizeof out fromRegion:MTLRegionMake2D(0, 0, 2, 1) mipmapLevel:0];
+    assert(memcmp(out, packed, sizeof packed) == 0);
+    h_glDeleteTextures(3, textures);
+}
 static void test_timer_queries(void) {
     GLuint names[3];
     assert(import("glGenQueries") == (void *)h_glGenQueries);
@@ -526,6 +548,7 @@ int main(int argc, char **argv) {
     test_sampler_objects();
     test_multiple_color_attachments();
     test_integer_instanced_vertex_fetch();
+    test_packed_image_copy();
     test_timer_queries();
 
     unsigned long sz;
@@ -545,6 +568,6 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, packed texture copies, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }
