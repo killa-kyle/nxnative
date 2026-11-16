@@ -148,7 +148,7 @@ static void test_literal_stride_fetch(void) {
         pkey_t k; memset(&k, 0, sizeof k);
         vkey_set(&k, 0, attr(0), vb_of(cur_vao(), 0));
         assert(k.stride[0] == cases[c].stride && k.div[0] == (cases[c].stride ? cases[c].div : 0));   // a constant fetch has no divisor, so one pipeline serves both
-        k.cpf = MTLPixelFormatRGBA8Unorm; k.mask = 15;
+        k.cpf[0] = MTLPixelFormatRGBA8Unorm; k.mask[0] = 15;
         id<MTLRenderPipelineState> pso = pso_get(&p, &k);
         assert(pso);
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:4 height:1 mipmapped:NO];
@@ -299,6 +299,57 @@ static void test_sampler_objects(void) {
     assert(!h_glIsSampler(names[0]) && !S.units[0].sampler && !S.units[3].sampler);
     h_glActiveTexture(GL_TEXTURE0);
 }
+static void test_multiple_color_attachments(void) {
+    assert(import("glColorMaski") == (void *)h_glColorMaski);
+    GLuint fb, tex[2];
+    h_glGenFramebuffers(1, &fb); h_glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    h_glGenTextures(2, tex);
+    for (int i = 0; i < 2; i++) {
+        h_glBindTexture(GL_TEXTURE_2D, tex[i]);
+        h_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+        h_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, tex[i], 0);
+    }
+    const GLenum swapped[] = { GL_COLOR_ATTACHMENT0 + 1, GL_COLOR_ATTACHMENT0 };
+    h_glDrawBuffers(2, swapped);
+    h_glColorMask(1, 1, 1, 1);
+    h_glClearColor(0, 0, 0, 1);
+    h_glClear(GL_COLOR_BUFFER_BIT);
+
+    static NSString *const source = @"#include <metal_stdlib>\nusing namespace metal;\n"
+        @"vertex float4 v(uint i [[vertex_id]]) {const float2 points[]={{-1,-1},{3,-1},{-1,3}}; return float4(points[i],0,1);}\n"
+        @"struct O {float4 a [[color(0)]]; float4 b [[color(1)]];};\n"
+        @"fragment O f() { return {float4(1,0,0,1), float4(0,1,1,0)}; }";
+    id<MTLLibrary> lib = [g_dev newLibraryWithSource:source options:nil error:nil]; assert(lib);
+    static shinfo stages[2];
+    GLuint name = h_glCreateProgram();
+    prog_t *program = prog_of(name);
+    program->si[0] = &stages[0]; program->si[1] = &stages[1]; program->linked = 1;
+    program->fn[0] = [lib newFunctionWithName:@"v"]; program->fn[1] = [lib newFunctionWithName:@"f"];
+    h_glUseProgram(name);
+    h_glViewport(0, 0, 2, 1);
+    h_glColorMaski(1, 0, 0, 1, 0);
+    h_glDrawArrays(GL_TRIANGLES, 0, 3);
+    uint8_t px[8];
+    h_glReadBuffer(GL_COLOR_ATTACHMENT0);
+    h_glReadPixels(0, 0, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    assert(px[0] == 0 && px[1] == 0 && px[2] == 255 && px[3] == 255);
+    h_glReadBuffer(GL_COLOR_ATTACHMENT0 + 1);
+    h_glReadPixels(0, 0, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    assert(px[0] == 255 && px[1] == 0 && px[2] == 0 && px[3] == 255);
+
+    const float green[] = { 0, 1, 0, 1 };
+    h_glColorMaski(1, 0, 1, 0, 0);
+    h_glClearBufferfv(GL_COLOR, 1, green);
+    h_glReadBuffer(GL_COLOR_ATTACHMENT0);
+    h_glReadPixels(0, 0, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    assert(px[0] == 0 && px[1] == 255 && px[2] == 255 && px[3] == 255);
+    h_glReadBuffer(GL_COLOR_ATTACHMENT0 + 1);
+    h_glReadPixels(0, 0, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    assert(px[0] == 255 && px[1] == 0 && px[2] == 0 && px[3] == 255);
+    h_glColorMask(1, 1, 1, 1);
+    h_glUseProgram(0); h_glDeleteProgram(name);
+    h_glBindFramebuffer(GL_FRAMEBUFFER, 0); h_glDeleteFramebuffers(1, &fb); h_glDeleteTextures(2, tex);
+}
 static void test_timer_queries(void) {
     GLuint names[3];
     assert(import("glGenQueries") == (void *)h_glGenQueries);
@@ -429,6 +480,7 @@ int main(int argc, char **argv) {
     test_uniform_buffer();
     test_named_uniform_blocks();
     test_sampler_objects();
+    test_multiple_color_attachments();
     test_timer_queries();
 
     unsigned long sz;
@@ -448,6 +500,6 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }

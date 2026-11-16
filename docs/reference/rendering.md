@@ -2042,6 +2042,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** Register the named sampler entry points and track their state per texture unit. When a sampler is bound, build the Metal sampler state from its parameters and the texture's usable mip range. Binding zero or deleting the object restores the texture's own parameters.
 - **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac regression reads pixels from a real Metal draw to check that a bound sampler changes filtering and checks that deleting it unbinds it. Post-fix Duo gameplay remains unverified.
 
+### Multiple colour attachments in OpenGL
+
+- **Symptom:** Factorio initializes graphics and audio, then exits when it configures the write mask for its second colour target. Earlier startup messages report an unsupported colour attachment and draw buffer.
+- **Cause:** The SDK resolves `glColorMaski` to null and the OpenGL layer only maps the first colour attachment. The failing call is `main+0x948024` with draw slot 1.
+- **Fix:** Map framebuffer attachments through the configured draw slots into the Metal pass and pipeline. Track colour masks and clears independently by draw slot and use the selected read attachment for pixel reads.
+- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac test draws through two swapped targets, reads each target, then clears a single channel on one target. Post-fix Duo gameplay remains unverified.
+
 ### GL textures, swizzles and uploads
 
 - Textures are made on first use from the levels given so far (Digimon's loader defines them level by level). An upload into a texture a pending command buffer may still read is a blit in command order; any other is a CPU write. Metal reads a channel a format lacks as 0 (alpha 1) as GL does, so only luminance / alpha formats get a swizzle: Metal refuses a swizzle on a texture that can be a render target (`Texture swizzling is not compatable with MTLTextureUsageRenderTarget`, Digimon's first story scene).
