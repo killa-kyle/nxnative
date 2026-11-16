@@ -251,15 +251,42 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
 }
 @end
 
+// Only the registered per-game scheme can request a launcher action.
+static NSString *native_launch_action(NSURL *url) {
+    if (![url.scheme.lowercaseString hasPrefix:@"nxnative-"] || url.user || url.password ||
+        url.port || url.path.length || url.query || url.fragment) return nil;
+    NSString *action = url.host.lowercaseString;
+    if (![action isEqualToString:@"play"] && ![action isEqualToString:@"settings"]) return nil;
+    for (NSDictionary *type in [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleURLTypes"]) {
+        if ([type[@"CFBundleURLSchemes"] containsObject:url.scheme.lowercaseString]) return action;
+    }
+    return nil;
+}
+
 // Scene lifecycle: create the window + hand focus events to front_ios.m
 @interface SceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @end
 @implementation SceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
+    for (UIOpenURLContext *context in o.URLContexts) {
+        NSString *action = native_launch_action(context.URL);
+        if (action) {
+            setenv("DM_LAUNCHER", [action isEqualToString:@"play"] ? "0" : "1", 1);
+            break;
+        }
+    }
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     self.window.rootViewController = front_ios_root();
     [self.window makeKeyAndVisible];
+}
+- (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)contexts {
+    for (UIOpenURLContext *context in contexts) {
+        if ([native_launch_action(context.URL) isEqualToString:@"play"]) {
+            [NSNotificationCenter.defaultCenter postNotificationName:@"DmNativePlay" object:nil];
+            break;
+        }
+    }
 }
 - (void)sceneWillResignActive:(UIScene *)s { front_ios_focus_event(0); }
 - (void)sceneDidEnterBackground:(UIScene *)s { front_ios_focus_event(1); }

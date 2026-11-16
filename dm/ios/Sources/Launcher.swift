@@ -240,12 +240,14 @@ public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @c
     if ProcessInfo.processInfo.environment["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); model.applySaved(); return false }
     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()
     var host: UIViewController?
-    let view = LauncherView(m: model) {
+    func play(useSaved: Bool) {
         guard let h = host else { return }
         host = nil
-        model.apply()
+        if useSaved { model.applySaved() } else { model.apply() }
         h.dismiss(animated: false) { done() }
     }
+    let view = LauncherView(m: model) { play(useSaved: false) }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("DmNativePlay"))) { _ in play(useSaved: true) }
     let h = DmHostingController(rootView: view)
     h.modalPresentationStyle = .fullScreen
     host = h
