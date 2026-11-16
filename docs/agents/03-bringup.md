@@ -10,6 +10,24 @@ $W/run/boot.sh <log name> [seconds] [VAR=value ...]
 
 `boot.sh` runs `dmhost <patched dir>` with `DM_ROMFS`, `DM_SAVE`, `DM_TEMP`, `DM_MSL_DIR` set, under a perl `alarm` (a run that hits the time limit ends with `CRASH sig=14` — that is the alarm, not a crash). Logs go to `run/<name>.log`. Logs may contain non-UTF-8 bytes: use `grep -a` / `LC_ALL=C` when filtering.
 
+## Native port acceptance
+
+For a large reservation, compare the requested range, mapped bytes, and
+highest mapped offset in the Switch-sized probe. Trace the caller and allocator.
+Search the [memory reference](../reference/memory.md) for prior fixes. Mina’s
+pools could be resized at their call sites. Densha’s sparse Unreal pools needed
+the existing host allocator substitution before the engine region could shrink.
+Run again on Mac with `DM_ALIAS_SIZE` set to the phone profile’s alias size.
+Capture the new region map and verify frames with the compiled shaders.
+
+On the physical device, launch the exact build and exercise a representative
+gameplay path. For a route-based game, drive a route through the results screen.
+For an early crash, attach LLDB at launch with matching symbols and capture the
+first stop and module-relative PC. For a failure in rendering, relaunch from an
+Xcode scheme with Metal API Validation enabled and capture the first diagnostic.
+Repeat the gameplay check with instrumentation off. Record Mac and physical
+device results separately in the game note.
+
 ## Reading the log
 
 | Marker | Meaning |
