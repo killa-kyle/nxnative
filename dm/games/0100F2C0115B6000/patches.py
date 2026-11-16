@@ -143,9 +143,34 @@ def matched_frame_step(ctx):
     if None in parts: return
     stub(ctx, ctx.base, *parts)
 
+def legacy_frame_step(ctx):
+    # 1.1.0 takes an interval in 60 Hz units and uses it for both speed and delta time.
+    # The host already paces NVN presents when a frame-step state page is installed.
+    site = ctx.base + 0x10
+    ctx.site(site, '2000221e')  # scvtf s0,w1
+    start = ctx.here()
+    ctx.emit(ADRP(16, ctx.here(), ctx.state))
+    for word in (0xb9400211,   # ldr w17,[x16]        target fps
+                 0x34000111,   # cbz w17,original
+                 0xb9402211,   # ldr w17,[x16,#0x20] host step
+                 0x340000d1,   # cbz w17,original   host hasn't decided yet
+                 0xf9401a0f,   # ldr x15,[x16,#0x30] vsyncs stepped
+                 0x8b3141ef,   # add x15,x15,w17,uxtw
+                 0xf9001a0f,   # str x15,[x16,#0x30]
+                 0x1e230220):  # ucvtf s0,w17
+        ctx.emit(word)
+    ctx.emit(B(ctx.here(), site + 4))
+    ctx.emit(0x1e220020)        # original: scvtf s0,w1
+    ctx.emit(B(ctx.here(), site + 4))
+    ctx.put(site, [B(site, start)], '1.1.0 game speed and delta time use the host frame step')
+
+
 # Placed by the functions they patch, on any build that keeps all six (checked on 1.4.3, 2026-11-09: rewritten byte-identical to the build entry it had until then,
 # FRAME_STEP of build 277178b7…, at main+0x2db174, +0x2daa20, +0x3e55e0, +0x1fbb50, +0xbe1304 and +0xd5c24)
 MATCH_FRAME_STEP = {'main': [
+    {'name': '60 fps frame step and render scale', 'size': 480,
+     'fingerprints': ['3cdca70e19a2fe813a4ef76fc89433eaceb5b1ef233ccb0fcf8339eaad3f4ae1'],
+     'stub': legacy_frame_step},
     {'name': '60 fps frame step and render scale', 'size': 664, 'fingerprints': ['568aa53f9c6cfb840d42343952d0607b8f591bd03371888da644cbff748c16a1'],   # 1.4.3 main+0x2db174
      'stub': matched_frame_step,
      'others': {'game step reader 1': {'size': 856, 'fingerprints': ['7bdc3508ead27be8afedb9ae131f5b84787fd8554014d7a84cffa445dfff560a']},   # main+0x2daa20
