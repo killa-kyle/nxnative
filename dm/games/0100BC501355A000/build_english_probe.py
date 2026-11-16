@@ -98,7 +98,7 @@ TUTORIALS = {
         {
             0xa87: 'A bridge is ahead. Sound the horn as you cross it!',
             0xc76: 'Press A to sound the horn.',
-            0xd8d: "Time it right and the bridge glows green. Heart Points unlock Driver's Path missions.",
+            0xd8d: "Good timing lights the bridge green. Hearts unlock Driver's Path missions.",
             0xec8: 'There are other places to use the horn. Try them as you learn the route.',
             0xfdb: 'Back to driving. Remember the horn!',
         },
