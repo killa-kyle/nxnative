@@ -52,3 +52,12 @@ text constants in cooked Blueprint exports, so the patch writes original
 English translations into these fields. It keeps the opcode, string terminator
 and jump offsets intact and validates the original export fingerprints. Text
 baked into textures, HUD labels and additional modes remain separate work.
+
+[DDG Mirai Station](https://ddgmirai.alchemygameworks.com/#ddgfinal) links the
+Final PC patch 1.2. Its installer carries paired Japanese and English
+`lect.txt` tutorial scripts, formatting directives, a text injector and
+repacked graphics archives. Compare the paired tutorial lines for shared
+railway terminology such as stop position, scheduled arrival time and
+speedometer. Use Yamanote’s own rules, button prompts and Blueprint fields
+when adapting a line. Use separate texture editing for lettering baked into
+menu art.
