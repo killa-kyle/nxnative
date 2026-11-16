@@ -2306,6 +2306,52 @@ GL(glCopyImageSubData, void, GLuint src, GLenum st, GLint sl, GLint sx, GLint sy
     ((void (*)(const image_copy_args *))(const void *)copy_image_impl_bs)(&a);
 }
 
+// Copy the read framebuffer into one slice of a 3D or array texture.
+typedef struct { GLenum target; GLint level, dx, dy, dz, sx, sy; GLsizei w, h; } copy_slice_args;
+static void copy_slice_impl(const copy_slice_args *a) __attribute__((used));
+BIGSTUB(copy_slice_impl);
+static void copy_slice_impl(const copy_slice_args *a) {
+    if (a->target != GL_TEXTURE_3D && a->target != GL_TEXTURE_2D_ARRAY) {
+        gl_error(GL_INVALID_ENUM); return;
+    }
+    if (a->level < 0 || a->level >= MAXLV || a->dx < 0 || a->dy < 0 || a->dz < 0 ||
+        a->sx < 0 || a->sy < 0 || a->w < 0 || a->h < 0) {
+        gl_error(GL_INVALID_VALUE); return;
+    }
+    if (!a->w || !a->h) return;
+    tex_t *dst = bound_tex(a->target);
+    int sl, ss;
+    id<MTLTexture> src = fb_color(S.read_fb, 1, &sl, &ss);
+    if (!src || !dst || (!dst->made && !tex_make(dst, 0)) || !dst->tex ||
+        src.pixelFormat != dst->tex.pixelFormat || src.sampleCount != 1) {
+        gl_error(GL_INVALID_OPERATION); return;
+    }
+    bool volume = a->target == GL_TEXTURE_3D;
+    if (a->level >= dst->levels ||
+        (size_t)a->dz >= (volume ? umax(1, dst->tex.depth >> a->level) : dst->tex.arrayLength) ||
+        (size_t)a->dx + a->w > umax(1, dst->tex.width >> a->level) ||
+        (size_t)a->dy + a->h > umax(1, dst->tex.height >> a->level) ||
+        (size_t)a->sx + a->w > umax(1, src.width >> sl) ||
+        (size_t)a->sy + a->h > umax(1, src.height >> sl)) {
+        gl_error(GL_INVALID_VALUE); return;
+    }
+    if (g_pend_clear.bits) clears_flush();
+    pass_end();
+    id<MTLBlitCommandEncoder> blit = [cb_get() blitCommandEncoder];
+    [blit copyFromTexture:src sourceSlice:ss sourceLevel:sl sourceOrigin:MTLOriginMake(a->sx, a->sy, 0)
+               sourceSize:MTLSizeMake(a->w, a->h, 1) toTexture:dst->tex
+         destinationSlice:volume ? 0 : a->dz destinationLevel:a->level
+        destinationOrigin:MTLOriginMake(a->dx, a->dy, volume ? a->dz : 0)];
+    [blit endEncoding];
+    dst->use = g_serial;
+    g_n_blit++;
+}
+GL(glCopyTexSubImage3D, void, GLenum target, GLint level, GLint dx, GLint dy, GLint dz,
+    GLint sx, GLint sy, GLsizei w, GLsizei h) {
+    copy_slice_args a = {target, level, dx, dy, dz, sx, sy, w, h};
+    ((void (*)(const copy_slice_args *))(const void *)copy_slice_impl_bs)(&a);
+}
+
 // glBlitFramebuffer of colour without scaling, flipping or a format change (LÖVE resolves multisampled canvases so); its last two arguments are on the stack, 64-bit here
 typedef struct { GLint s[4], d[4]; GLbitfield mask; } blit_args;
 static void blit_impl(const blit_args *a) __attribute__((used));
