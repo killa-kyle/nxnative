@@ -87,6 +87,7 @@ enum {
     GL_DEPTH_COMPONENT16 = 0x81a5, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT32,
     GL_MAJOR_VERSION = 0x821b, GL_MINOR_VERSION, GL_NUM_EXTENSIONS, GL_TIME_ELAPSED = 0x88bf, GL_TIMESTAMP = 0x8e28,
     GL_TEXTURE_WIDTH = 0x1000, GL_TEXTURE_HEIGHT, GL_TEXTURE_COMPRESSED_IMAGE_SIZE = 0x86a0, GL_TEXTURE_COMPRESSED,
+    GL_TEXTURE_BUFFER = 0x8c2a, GL_MAX_TEXTURE_BUFFER_SIZE, GL_TEXTURE_BINDING_BUFFER, GL_PIXEL_UNPACK_BUFFER = 0x88ec,
     GL_QUERY_RESULT = 0x8866, GL_QUERY_RESULT_AVAILABLE, GL_RG = 0x8227, GL_R8 = 0x8229, GL_RG8 = 0x822b, GL_R16F = 0x822d, GL_R32F, GL_RG16F, GL_RG32F,
     GL_UNSIGNED_SHORT_5_6_5 = 0x8363, GL_MIRRORED_REPEAT = 0x8370,
     GL_COMPRESSED_RGB_S3TC_DXT1 = 0x83f0, GL_COMPRESSED_RGBA_S3TC_DXT1, GL_COMPRESSED_RGBA_S3TC_DXT3, GL_COMPRESSED_RGBA_S3TC_DXT5,
@@ -155,12 +156,12 @@ static _Atomic uint64_t g_sk_prog, g_sk_pass, g_sk_attr, g_sk_pso;   // draws dr
 
 // ---------- Shader table (<DM_MSL_DIR>/gl/gl_shaders.tsv) ----------
 enum { T_FLOAT, T_VEC2, T_VEC3, T_VEC4, T_INT, T_IVEC2, T_IVEC3, T_IVEC4, T_UINT, T_UVEC2, T_UVEC3, T_UVEC4, T_BOOL, T_MAT2, T_MAT3, T_MAT4,
-       T_SAMP2D, T_SAMPCUBE, T_SAMP3D, T_SAMP2DARR, T_SAMP2DSH, T_USAMP2D, T_OTHER };
+       T_SAMP2D, T_SAMPCUBE, T_SAMP3D, T_SAMP2DARR, T_SAMP2DSH, T_USAMP2D, T_SAMPBUF, T_USAMPBUF, T_OTHER };
 static const char *const g_tnames[] = {"float", "vec2", "vec3", "vec4", "int", "ivec2", "ivec3", "ivec4", "uint", "uvec2", "uvec3", "uvec4", "bool", "mat2", "mat3", "mat4",
-                                       "sampler2D", "samplerCube", "sampler3D", "sampler2DArray", "sampler2DShadow", "usampler2D"};
+                                       "sampler2D", "samplerCube", "sampler3D", "sampler2DArray", "sampler2DShadow", "usampler2D", "samplerBufferNative", "usamplerBufferNative"};
 static const GLenum g_tenums[] = {GL_FLOAT, GL_FLOAT_VEC2, GL_FLOAT_VEC3, GL_FLOAT_VEC4, GL_INT, GL_INT_VEC2, GL_INT_VEC3, GL_INT_VEC4, GL_UNSIGNED_INT, GL_UNSIGNED_INT_VEC2,
                                   GL_UNSIGNED_INT_VEC3, GL_UNSIGNED_INT_VEC4, GL_BOOL, GL_FLOAT_MAT2, GL_FLOAT_MAT3, GL_FLOAT_MAT4, GL_SAMPLER_2D, GL_SAMPLER_CUBE, GL_SAMPLER_3D,
-                                  GL_SAMPLER_2D_ARRAY, GL_SAMPLER_2D_SHADOW, GL_UNSIGNED_INT_SAMPLER_2D, GL_FLOAT};   // glGetActiveUniform's types
+                                  GL_SAMPLER_2D_ARRAY, GL_SAMPLER_2D_SHADOW, GL_UNSIGNED_INT_SAMPLER_2D, 0x8dc2, 0x8dd8, GL_FLOAT};   // glGetActiveUniform's types
 static int tcode(const char *s) { for (int i = 0; i < T_OTHER; i++) if (!strcmp(s, g_tnames[i])) return i; return T_OTHER; }
 static int tcomps(int t) { static const int c[] = {1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 1, 4, 9, 16}; return t < T_SAMP2D ? c[t] : 1; }
 static int is_samp(int t) { return t >= T_SAMP2D && t < T_OTHER; }
@@ -328,7 +329,7 @@ static const sample_params_t sample_defaults = {
 NAMES(sample_params_t, g_samplers, g_nsamplers, g_capsamplers)
 static sample_params_t *sampler_of(GLuint n) { return n && n < g_nsamplers ? g_samplers[n] : NULL; }
 typedef struct {
-    GLenum target; int made, fmt, levels, slevels; uint32_t w, h, d; uint64_t use, gen;
+    GLenum target; GLuint buffer; MTLPixelFormat buffer_format; uint8_t buffer_bpp; int made, fmt, levels, slevels; uint32_t w, h, d; uint64_t use, gen;
     level_t pend[6][MAXLV]; int defined;   // defined: bit per level whose face(s) were given
     __strong id<MTLTexture> tex; __strong id<MTLSamplerState> smp;
     sample_params_t sample;
@@ -414,9 +415,9 @@ static int sp_check(GLuint n, int prog, const char *fn) {
 // A zero size denotes a whole-buffer binding; it follows a later glBufferData reallocation.
 typedef struct { GLuint buf; size_t offset, size; } ubound_t;
 static struct {
-    GLuint array_buf, uniform_buf, pack_buf, rb, fb, read_fb, prog, vao; int unit;
+    GLuint array_buf, uniform_buf, pack_buf, unpack_buf, texture_buf, rb, fb, read_fb, prog, vao; int unit;
     ubound_t ubo[NUBO_BINDINGS];
-    struct { GLuint t2d, tcube, t3d, t2da, sampler; } units[NUNITS];
+    struct { GLuint t2d, tcube, t3d, t2da, tbuf, sampler; } units[NUNITS];
     float clear_c[4]; double clear_d; int clear_s;
     uint8_t cmask[GL_DRAW_SLOTS], dmask, depth, blend, cull, scissor, stencil, poffset, srgb;
     GLenum dfunc, cull_face, front, bsrc, bdst, bsa, bda, eqc, eqa;
@@ -438,6 +439,7 @@ static GLuint *unit_slot(int unit, GLenum target) {   // a unit's binding of a t
     switch (target) {
         case GL_TEXTURE_2D: return &S.units[unit].t2d; case GL_TEXTURE_CUBE_MAP: return &S.units[unit].tcube;
         case GL_TEXTURE_3D: return &S.units[unit].t3d; case GL_TEXTURE_2D_ARRAY: return &S.units[unit].t2da;
+        case GL_TEXTURE_BUFFER: return &S.units[unit].tbuf;
     }
     return NULL;
 }
@@ -992,6 +994,50 @@ static int bind_uniform_blocks(prog_t *p, id<MTLRenderCommandEncoder> e) {
     }
     return 1;
 }
+static NSUInteger texture_buffer_alignment(MTLPixelFormat format) {
+    NSUInteger a = [g_dev minimumTextureBufferAlignmentForPixelFormat:format];
+    NSUInteger b = [g_dev minimumLinearTextureAlignmentForPixelFormat:format];
+    return MAX(1, MAX(a, b));
+}
+static NSUInteger gl_buffer_storage_size(NSUInteger bytes) {
+    static NSUInteger alignment;
+    if (!alignment) {
+        const MTLPixelFormat formats[] = {MTLPixelFormatR16Uint, MTLPixelFormatR32Uint, MTLPixelFormatR32Float,
+            MTLPixelFormatRGBA8Uint, MTLPixelFormatRGBA32Float, MTLPixelFormatRGBA32Uint};
+        alignment = 16;
+        for (size_t i = 0; i < sizeof formats / sizeof *formats; i++)
+            alignment = MAX(alignment, texture_buffer_alignment(formats[i]));
+    }
+    return (bytes + alignment - 1) / alignment * alignment;
+}
+static id<MTLTexture> texture_buffer_view(id<MTLBuffer> buffer, size_t width, MTLPixelFormat format, unsigned bpp) {
+    if (!buffer || !width) return nil;
+    NSUInteger alignment = texture_buffer_alignment(format);
+    NSUInteger row = (width * bpp + alignment - 1) / alignment * alignment;
+    if (row > buffer.length) return nil;
+    MTLTextureDescriptor *d = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:format
+        width:width resourceOptions:buffer.resourceOptions usage:MTLTextureUsageShaderRead];
+    return [buffer newTextureWithDescriptor:d offset:0 bytesPerRow:row];
+}
+static id<MTLTexture> bind_texture_buffer(tex_t *t, int integer) {
+    buf_t *b = t ? buf_of(t->buffer) : NULL;
+    if (b && b->mb) {
+        size_t width = b->size / t->buffer_bpp;
+        if (t->tex.buffer != b->mb || t->tex.width != width)
+            t->tex = texture_buffer_view(b->mb, width, t->buffer_format, t->buffer_bpp);
+        if (t->tex) { b->use = g_serial; return t->tex; }
+    }
+    static __strong id<MTLTexture> fallback[2];
+    if (!fallback[integer]) {
+        MTLPixelFormat format = integer ? MTLPixelFormatRGBA32Uint : MTLPixelFormatRGBA32Float;
+        id<MTLBuffer> zero = [g_dev newBufferWithLength:gl_buffer_storage_size(16) options:MTLResourceStorageModeShared];
+        if (zero) {
+            memset(zero.contents, 0, zero.length);
+            fallback[integer] = texture_buffer_view(zero, 1, format, 16);
+        }
+    }
+    return fallback[integer];
+}
 static void bind_uniforms_textures(prog_t *p) {
     id<MTLRenderCommandEncoder> e = g_enc;
     for (int st = 0; st < 2; st++) {
@@ -1010,6 +1056,12 @@ static void bind_uniforms_textures(prog_t *p) {
         puni_t *u = &p->u[i];
         if (!is_samp(u->type)) continue;
         int unit = u->unit < 0 || u->unit >= NUNITS ? 0 : u->unit;
+        if (u->type == T_SAMPBUF || u->type == T_USAMPBUF) {
+            id<MTLTexture> tex = bind_texture_buffer(tex_of(S.units[unit].tbuf), u->type == T_USAMPBUF);
+            if (u->slot[0] >= 0) [e setVertexTexture:tex atIndex:u->slot[0]];
+            if (u->slot[1] >= 0) [e setFragmentTexture:tex atIndex:u->slot[1]];
+            continue;
+        }
         GLenum target = u->type == T_SAMPCUBE ? GL_TEXTURE_CUBE_MAP : u->type == T_SAMP3D ? GL_TEXTURE_3D : u->type == T_SAMP2DARR ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
         tex_t *t = tex_of(*unit_slot(unit, target));
         id<MTLTexture> tx = nil; id<MTLSamplerState> sm = g_samp0;
@@ -1544,6 +1596,8 @@ GL(glGetIntegerv, void, GLenum p, GLint *v) {
         case GL_MAX_TEXTURE_MAX_ANISOTROPY: *v = 16; return;
         case GL_UNPACK_ALIGNMENT: *v = S.unpack_align; return;
         case GL_PACK_ALIGNMENT: *v = S.pack_align; return;
+        case GL_MAX_TEXTURE_BUFFER_SIZE: *v = (GLint)MIN(64u << 20, g_dev.maxBufferLength / 16); return;
+        case GL_TEXTURE_BINDING_BUFFER: *v = S.units[S.unit].tbuf; return;
         case GL_PIXEL_PACK_BUFFER_BINDING: *v = S.pack_buf; return;
     }
     static GLenum seen[32]; static int n;
@@ -1569,6 +1623,12 @@ GL(glDeleteBuffers, void, GLsizei n, const GLuint *b) {
     for (GLsizei i = 0; i < n; i++) {
         buf_t *x = buf_of(b[i]); if (!x) continue; x->mb = nil; free(x); g_bufs[b[i]] = NULL;
         vao_t *v = cur_vao();
+        for (unsigned j = 1; j < g_ntexs; j++) {
+            tex_t *t = g_texs[j];
+            if (t && t->buffer == b[i]) { t->buffer = 0; t->tex = nil; }
+        }
+        if (S.unpack_buf == b[i]) S.unpack_buf = 0;
+        if (S.texture_buf == b[i]) S.texture_buf = 0;
         if (S.array_buf == b[i]) S.array_buf = 0; if (S.uniform_buf == b[i]) S.uniform_buf = 0; if (S.pack_buf == b[i]) S.pack_buf = 0; if (v->ebo == b[i]) v->ebo = 0;
         for (int j = 0; j < 16; j++) if (v->b[j].buf == b[i]) v->b[j].buf = 0;
         for (int j = 0; j < NUBO_BINDINGS; j++) if (S.ubo[j].buf == b[i]) S.ubo[j] = (ubound_t){0};
@@ -1579,6 +1639,8 @@ GL(glBindBuffer, void, GLenum target, GLuint b) {
     else if (target == GL_ELEMENT_ARRAY_BUFFER) cur_vao()->ebo = b;
     else if (target == GL_UNIFORM_BUFFER) S.uniform_buf = b;
     else if (target == GL_PIXEL_PACK_BUFFER) S.pack_buf = b;
+    else if (target == GL_PIXEL_UNPACK_BUFFER) S.unpack_buf = b;
+    else if (target == GL_TEXTURE_BUFFER) S.texture_buf = b;
     else RED1("glBindBuffer target %#x not implemented", target);
 }
 // Indexed UBO calls also bind the generic target, which glBufferData and friends use.
@@ -1598,7 +1660,7 @@ GL(glBindBufferBase, void, GLenum target, GLuint index, GLuint b) {
     bind_uniform_buffer(index, b, 0, 0);
 }
 static buf_t *bound_buf(GLenum target) {
-    return buf_of(target == GL_ARRAY_BUFFER ? S.array_buf : target == GL_ELEMENT_ARRAY_BUFFER ? cur_vao()->ebo : target == GL_UNIFORM_BUFFER ? S.uniform_buf : target == GL_PIXEL_PACK_BUFFER ? S.pack_buf : 0);
+    return buf_of(target == GL_ARRAY_BUFFER ? S.array_buf : target == GL_ELEMENT_ARRAY_BUFFER ? cur_vao()->ebo : target == GL_UNIFORM_BUFFER ? S.uniform_buf : target == GL_PIXEL_PACK_BUFFER ? S.pack_buf : target == GL_PIXEL_UNPACK_BUFFER ? S.unpack_buf : target == GL_TEXTURE_BUFFER ? S.texture_buf : 0);
 }
 // Orphaning: data for a buffer a pending command buffer may still read goes into a new MTLBuffer, so draws already encoded keep the old contents
 GLB(glBufferData, void, GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
@@ -1609,7 +1671,7 @@ GLB(glBufferData, void, GLenum target, GLsizeiptr size, const void *data, GLenum
     if (size <= 0) { b->mb = nil; b->size = 0; return; }
     @autoreleasepool {
         if (!b->mb || b->mb.length < (NSUInteger)size || b->use > atomic_load(&g_done) || b->mb.length > (NSUInteger)size * 2 + 4096)
-            b->mb = [g_dev newBufferWithLength:(size + 15) & ~(GLsizeiptr)15 options:MTLResourceStorageModeShared];
+            b->mb = [g_dev newBufferWithLength:gl_buffer_storage_size(size) options:MTLResourceStorageModeShared];
         b->size = size; b->use = 0;
         if (data) memcpy(b->mb.contents, data, size); else memset(b->mb.contents, 0, size);
     }
@@ -1618,7 +1680,7 @@ GLB(glBufferData, void, GLenum target, GLsizeiptr size, const void *data, GLenum
 GLB(glBufferStorage, void, GLenum target, GLsizeiptr size, const void *data, GLbitfield flags) {
     (void)flags; buf_t *b = bound_buf(target);
     if (!b || size <= 0) { RED1("glBufferStorage(%#x, %ld) with no buffer bound", target, (long)size); return; }
-    @autoreleasepool { b->mb = [g_dev newBufferWithLength:(size + 15) & ~(GLsizeiptr)15 options:MTLResourceStorageModeShared]; }
+    @autoreleasepool { b->mb = [g_dev newBufferWithLength:gl_buffer_storage_size(size) options:MTLResourceStorageModeShared]; }
     b->size = size; b->use = 0; b->immutable = 1;
     if (data) memcpy(b->mb.contents, data, size);
 }
@@ -1726,13 +1788,14 @@ GL(glDeleteTextures, void, GLsizei n, const GLuint *t) {
         tex_drop(x); x->smp = nil; free(x); g_texs[t[i]] = NULL;
         for (int u = 0; u < NUNITS; u++) {
             if (S.units[u].t2d == t[i]) S.units[u].t2d = 0; if (S.units[u].tcube == t[i]) S.units[u].tcube = 0;
+            if (S.units[u].tbuf == t[i]) S.units[u].tbuf = 0;
             if (S.units[u].t3d == t[i]) S.units[u].t3d = 0; if (S.units[u].t2da == t[i]) S.units[u].t2da = 0;
         }
     }
 }
 GL(glActiveTexture, void, GLenum u) { if (u >= GL_TEXTURE0 && u < GL_TEXTURE0 + NUNITS) S.unit = u - GL_TEXTURE0; }
 GL(glBindTexture, void, GLenum target, GLuint t) {
-    GLuint *slot = target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP || target == GL_TEXTURE_3D || target == GL_TEXTURE_2D_ARRAY ? unit_slot(S.unit, target) : NULL;
+    GLuint *slot = target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP || target == GL_TEXTURE_3D || target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_BUFFER ? unit_slot(S.unit, target) : NULL;
     if (!slot) { RED1("texture target %#x not implemented", target); return; }
     tex_t *x = tex_of(t);
     if (t && !x) {   // a name glGenTextures never gave: GL makes the texture on its first bind
@@ -1741,6 +1804,22 @@ GL(glBindTexture, void, GLenum target, GLuint t) {
     }
     if (x && !x->target) tex_init_params(x, target);
     *slot = t;
+}
+GL(glTexBuffer, void, GLenum target, GLenum format, GLuint buffer) {
+    if (target != GL_TEXTURE_BUFFER) { gl_error(GL_INVALID_ENUM); return; }
+    tex_t *t = bound_tex(target);
+    if (!t || t->target != target || (buffer && !buf_of(buffer))) { gl_error(GL_INVALID_OPERATION); return; }
+    MTLPixelFormat pf;
+    unsigned bpp;
+    switch (format) {
+        case 0x8234: pf = MTLPixelFormatR16Uint; bpp = 2; break; // GL_R16UI
+        case 0x8236: pf = MTLPixelFormatR32Uint; bpp = 4; break; // GL_R32UI
+        case GL_R32F: pf = MTLPixelFormatR32Float; bpp = 4; break;
+        case 0x8d7c: pf = MTLPixelFormatRGBA8Uint; bpp = 4; break; // GL_RGBA8UI
+        case GL_RGBA32F: pf = MTLPixelFormatRGBA32Float; bpp = 16; break;
+        default: gl_error(GL_INVALID_ENUM); return;
+    }
+    t->buffer = buffer; t->buffer_format = pf; t->buffer_bpp = bpp; t->tex = nil;
 }
 static int sample_param(sample_params_t *s, GLenum p, float f, GLint i) {
     switch (p) {
@@ -1832,18 +1911,35 @@ GL(glSamplerParameteriv, void, GLuint name, GLenum p, const GLint *v) {
 typedef struct { GLenum target; GLint level, ifmt, x, y; GLsizei w, h; GLenum format, type; const void *pixels; GLsizei size; int sub, compressed; } teximg_args;
 static void teximg_impl(const teximg_args *a) __attribute__((used));
 BIGSTUB(teximg_impl);
+static int compressed_expand_mips(tex_t *t) {
+    id<MTLTexture> old = t->tex;
+    int levels = t->levels;
+    uint64_t use = t->use;
+    if (g_pend_clear.bits) clears_flush();
+    pass_end();
+    t->made = 0; t->slevels = MAXLV;
+    if (!tex_make(t, 0)) {
+        t->slevels = 0; t->made = 1; t->tex = old; t->levels = levels; t->use = use;
+        return 0;
+    }
+    t->slevels = 0;
+    id<MTLBlitCommandEncoder> b = [cb_get() blitCommandEncoder];
+    [b copyFromTexture:old sourceSlice:0 sourceLevel:0 toTexture:t->tex destinationSlice:0 destinationLevel:0
+             sliceCount:tex_faces(t) levelCount:levels];
+    [b endEncoding]; g_n_blit++;
+    t->gen++; t->use = g_serial;
+    return 1;
+}
 static void compressed_subimage(const teximg_args *a, tex_t *t, int face) {
     const char *fn = "glCompressedTexSubImage2D";
     if (a->level < 0 || a->level >= MAXLV || a->x < 0 || a->y < 0 || a->w < 0 || a->h < 0 || a->size < 0) {
         gl_error_at(GL_INVALID_VALUE, fn); return;
     }
     if (!a->w || !a->h) return;
-    if (!t || t->fmt < 0 || !a->pixels) { gl_error_at(GL_INVALID_OPERATION, fn); return; }
+    if (!t || t->fmt < 0) { RED1("compressed region upload has no bound storage"); gl_error_at(GL_INVALID_OPERATION, fn); return; }
     int conversion;
     if (fmt_pick(a->ifmt, 0, 0, &conversion) != t->fmt || g_fmt[t->fmt].kind != K_BLOCK) {
-        gl_error_at(GL_INVALID_OPERATION, fn); return;
-    }
-    if ((!t->made && !tex_make(t, 0)) || !t->tex || a->level >= t->levels) {
+        RED1("compressed region format %#x differs from storage %s", a->ifmt, g_fmt[t->fmt].name);
         gl_error_at(GL_INVALID_OPERATION, fn); return;
     }
     const fmt_t *format = &g_fmt[t->fmt];
@@ -1855,7 +1951,20 @@ static void compressed_subimage(const teximg_args *a, tex_t *t, int face) {
         (size_t)a->size != pitch * fmt_rows(t->fmt, a->h)) {
         gl_error_at(GL_INVALID_VALUE, fn); return;
     }
-    tex_write(t, face, a->level, a->x, a->y, 0, a->w, a->h, a->pixels, pitch);
+    const void *data = a->pixels;
+    if (S.unpack_buf) {
+        buf_t *buffer = buf_of(S.unpack_buf); uintptr_t offset = (uintptr_t)data;
+        if (!buffer || !buffer->mb || offset > buffer->size || (size_t)a->size > buffer->size - offset) {
+            gl_error_at(GL_INVALID_OPERATION, fn); return;
+        }
+        data = (const uint8_t *)buffer->mb.contents + offset;
+    }
+    if (!data) { RED1("compressed region upload of %d bytes has no data", a->size); gl_error_at(GL_INVALID_OPERATION, fn); return; }
+    if ((!t->made && !tex_make(t, 0)) || !t->tex ||
+        (a->level >= t->levels && (t->slevels || !(umax(t->w, t->h) >> a->level) || !compressed_expand_mips(t)))) {
+        gl_error_at(GL_INVALID_OPERATION, fn); return;
+    }
+    tex_write(t, face, a->level, a->x, a->y, 0, a->w, a->h, data, pitch);
 }
 static void teximg_impl(const teximg_args *a) {
     @autoreleasepool {

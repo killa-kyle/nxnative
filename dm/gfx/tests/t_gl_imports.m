@@ -511,7 +511,66 @@ static void test_s3tc_readback(void) {
     assert(memcmp(compressed, blocks[0], 16) == 0 && memcmp(compressed + 16, blue, 16) == 0);
     h_glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 0, 2, 4, 4, GL_COMPRESSED_RGBA_S3TC_DXT5, sizeof blue, blue);
     assert(h_glGetError() == GL_INVALID_VALUE);
+    GLuint unpack; h_glGenBuffers(1, &unpack); h_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, unpack);
+    h_glBufferData(GL_PIXEL_UNPACK_BUFFER, sizeof blocks, blocks, 0);
+    h_glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 0, 4, 4, 4, GL_COMPRESSED_RGBA_S3TC_DXT5, sizeof blue, (void *)16);
+    h_glGetCompressedTexImage(GL_TEXTURE_2D, 0, compressed);
+    assert(h_glGetError() == GL_NO_ERROR && memcmp(compressed, blocks, sizeof blocks) == 0);
+    h_glDeleteBuffers(1, &unpack); assert(!S.unpack_buf);
+    h_glDeleteTextures(1, &dest);
+    h_glGenTextures(1, &dest); h_glBindTexture(GL_TEXTURE_2D, dest);
+    h_glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5, 4, 8, 0, sizeof blocks, blocks);
+    h_glGetCompressedTexImage(GL_TEXTURE_2D, 0, compressed);
+    assert(tex_of(dest)->levels == 1);
+    h_glCompressedTexSubImage2D(GL_TEXTURE_2D, 1, 0, 0, 2, 4, GL_COMPRESSED_RGBA_S3TC_DXT5, sizeof blue, blue);
+    h_glGetCompressedTexImage(GL_TEXTURE_2D, 1, compressed);
+    assert(h_glGetError() == GL_NO_ERROR && memcmp(compressed, blue, sizeof blue) == 0);
+    h_glGetCompressedTexImage(GL_TEXTURE_2D, 0, compressed);
+    assert(memcmp(compressed, blocks, sizeof blocks) == 0);
     h_glDeleteTextures(1, &dest); h_glDeleteTextures(1, &texture);
+}
+static void test_texture_buffer(void) {
+    assert(import("glTexBuffer") == (void *)h_glTexBuffer);
+    assert(tcode("samplerBufferNative") == T_SAMPBUF && tcode("samplerBuffer") == T_OTHER);
+    GLuint buffer, tex[2], fb;
+    h_glGenBuffers(1, &buffer); h_glBindBuffer(GL_TEXTURE_BUFFER, buffer);
+    const float values[] = {0.0f, 1.0f};
+    h_glBufferData(GL_TEXTURE_BUFFER, sizeof values, values, 0);
+    h_glGenTextures(2, tex);
+    h_glActiveTexture(GL_TEXTURE0 + 2);
+    h_glBindTexture(GL_TEXTURE_BUFFER, tex[0]); h_glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, buffer);
+    h_glActiveTexture(GL_TEXTURE0);
+    h_glBindTexture(GL_TEXTURE_2D, tex[1]); h_glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 1, 1);
+    h_glGenFramebuffers(1, &fb); h_glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    h_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[1], 0);
+
+    static NSString *const source = @"#include <metal_stdlib>\nusing namespace metal;\n"
+        @"struct O {float4 p [[position]]; float r;};\n"
+        @"vertex O v(uint i [[vertex_id]], texture_buffer<float> t [[texture(1)]]) {"
+        @"const float2 points[]={{-1,-1},{3,-1},{-1,3}}; return {float4(points[i],0,1), t.read(1u).r};}\n"
+        @"fragment float4 f(O in [[stage_in]]) {return float4(in.r,0,0,1);}";
+    id<MTLLibrary> lib = [g_dev newLibraryWithSource:source options:nil error:nil]; assert(lib);
+    GLuint name = h_glCreateProgram();
+    prog_t *program = prog_of(name);
+    static shinfo stages[2];
+    program->si[0] = &stages[0]; program->si[1] = &stages[1]; program->linked = 1;
+    program->fn[0] = [lib newFunctionWithName:@"v"]; program->fn[1] = [lib newFunctionWithName:@"f"];
+    program->u = calloc(1, sizeof *program->u); program->nu = 1;
+    program->u[0] = (puni_t){.type = T_SAMPBUF, .slot = {1, -1}, .unit = 2};
+    h_glUseProgram(name); h_glViewport(0, 0, 1, 1);
+    h_glDrawArrays(GL_TRIANGLES, 0, 3);
+    uint8_t px[4] = {0};
+    h_glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    assert(px[0] == 255 && px[3] == 255);
+    const float replacement[] = {1.0f, 0.0f, 1.0f};
+    h_glBufferData(GL_TEXTURE_BUFFER, sizeof replacement, replacement, 0);
+    h_glDrawArrays(GL_TRIANGLES, 0, 3);
+    h_glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    assert(tex_of(tex[0])->tex.width == 3 && px[0] == 0 && px[3] == 255);
+
+    h_glUseProgram(0); h_glDeleteProgram(name);
+    h_glBindFramebuffer(GL_FRAMEBUFFER, 0); h_glDeleteFramebuffers(1, &fb);
+    h_glDeleteBuffers(1, &buffer); h_glDeleteTextures(2, tex);
 }
 static void test_timer_queries(void) {
     GLuint names[3];
@@ -649,6 +708,7 @@ int main(int argc, char **argv) {
     test_packed_image_copy();
     test_texture_readback();
     test_s3tc_readback();
+    test_texture_buffer();
     test_timer_queries();
 
     unsigned long sz;
@@ -668,6 +728,6 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, integer clears, packed texture copies, texture and BC3 readback, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, integer clears, packed texture copies, texture and BC3 readback, buffer textures, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }

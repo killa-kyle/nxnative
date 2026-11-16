@@ -2084,6 +2084,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** Validate the texture mip, compressed format, block bounds and input size. Use the existing Metal texture upload path to replace only the requested compressed region in command order.
 - **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac regression replaces only the bottom BC3 block after a queued texture copy and verifies the untouched top block and new bottom block by GPU readback. Post-fix Duo gameplay remains unverified.
 
+### OpenGL texture buffers and late sprite mip uploads
+
+- **Symptom:** Factorio reports invalid compressed sprite uploads, then exits while attaching the backing buffer for a shader lookup.
+- **Cause:** Compressed sprite uploads target mip 1 after the mutable texture's first use allocated only mip 0. The lookup then calls unresolved `glTexBuffer` at `main+0x94d434`. Older offline shader catalogs describe these lookup uniforms as 2D-emulated texel buffers.
+- **Fix:** Grow mutable compressed storage for a later mip while preserving existing blocks. Resolve pixel unpack buffer offsets for compressed uploads. Bind shared Metal buffer views for texture buffers and rebuild offline shader catalogs with the pinned translator's native texture buffer option. [Metal feature set tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)
+- **Found on:** Factorio 2.0.42, main build `244c3195a745d4a2f0499f2d5e7a318f`. Mac regressions draw from a native texture buffer and verify replacement buffer data, compressed block offsets, and late mip storage. The rebuilt catalogs compile 94 shaders per platform. Check gameplay separately on Duo.
+
 ### GL textures, swizzles and uploads
 
 - Textures are made on first use from the levels given so far (Digimon's loader defines them level by level). An upload into a texture a pending command buffer may still read is a blit in command order; any other is a CPU write. Metal reads a channel a format lacks as 0 (alpha 1) as GL does, so only luminance / alpha formats get a swizzle: Metal refuses a swizzle on a texture that can be a render target (`Texture swizzling is not compatable with MTLTextureUsageRenderTarget`, Digimon's first story scene).

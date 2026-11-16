@@ -147,7 +147,7 @@ def translate(src, stage, key, tmp):
     r = subprocess.run(['glslangValidator', '-V', '-R', '--aml', '--amb', '-S', stage, g, '-o', spv], capture_output=True, text=True)
     if r.returncode: return 'glslang: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]
     refl = json.loads(subprocess.run([SPIRV_CROSS, spv, '--reflect'], capture_output=True, text=True, check=True).stdout)
-    cmd = [SPIRV_CROSS, spv, '--msl', '--msl-version', '20300', '--msl-decoration-binding', '--rename-entry-point', 'main', f'gl_{key}_{stage[0]}', stage, '--output', msl]
+    cmd = [SPIRV_CROSS, spv, '--msl', '--msl-version', '20300', '--msl-decoration-binding', '--msl-texture-buffer-native', '--rename-entry-point', 'main', f'gl_{key}_{stage[0]}', stage, '--output', msl]
     if stage == 'vert': cmd.append('--fixup-clipspace')
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode: return 'spirv-cross: ' + r.stderr.strip()[:300]
@@ -181,7 +181,10 @@ def translate(src, stage, key, tmp):
         if e: return e
     for t in refl.get('textures', []):
         if t.get('array'): return f'sampler array {t["name"]}'
-        f.append(f't:{t["name"]}={t["binding"]}:{t["type"]}')
+        sampler_type = t["type"]
+        if sampler_type in ('samplerBuffer', 'usamplerBuffer'):
+            sampler_type += 'Native'
+        f.append(f't:{t["name"]}={t["binding"]}:{sampler_type}')
     for k in ('separate_images', 'separate_samplers', 'images', 'ssbos', 'push_constants'):
         if refl.get(k): return f'{k} are not implemented'
     if any(int(x) > 15 for x in re.findall(r'\[\[(?:sampler|buffer)\((\d+)\)\]\]', m)): return 'a buffer or sampler slot above 15'
