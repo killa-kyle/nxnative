@@ -14,7 +14,7 @@
 //   · textures are created on first use from the levels given so far (the game defines a texture level by level, and Metal needs the level count up front); an upload into a
 //     texture the GPU may still read goes through a blit in command order, any other is a CPU write;
 //   · shaders come from the offline library built by dm/gfx/tools/gl_shaders.py (<DM_MSL_DIR>/gl/): a shader is found by the hash of its source and its stage; its table row lists the
-//     vertex inputs, the members of its default uniform block (glUniform* writes them into CPU copies that are set as bytes at each draw that needs them) and its samplers.
+//     vertex inputs, the members of its default uniform block (glUniform* writes them into CPU copies), named std140 blocks (indexed buffer bindings), and its samplers.
 //     glGetAttribLocation returns the Metal attribute index of the input, so the game's attribute index is the Metal one; vertex buffers are at slot 30 − index.
 // Environment: DM_GL_LOG=1 logs object creation and the deletion of shaders and programs; DM_GL_CAPTURE=<dir> writes every shader source the game compiles (<key>.vert / <key>.frag, read by gl_shaders.py).
 #include "../../host/hle.h"
@@ -85,7 +85,8 @@ enum {
     GL_TEXTURE_WRAP_R = 0x8072, GL_COLOR_TABLE = 0x80d0, GL_BGRA = 0x80e1,
     GL_CLAMP_TO_BORDER = 0x812d, GL_CLAMP_TO_EDGE = 0x812f, GL_TEXTURE_MAX_LEVEL = 0x813d,
     GL_DEPTH_COMPONENT16 = 0x81a5, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT32,
-    GL_MAJOR_VERSION = 0x821b, GL_MINOR_VERSION, GL_NUM_EXTENSIONS, GL_RG = 0x8227, GL_R8 = 0x8229, GL_RG8 = 0x822b, GL_R16F = 0x822d, GL_R32F, GL_RG16F, GL_RG32F,
+    GL_MAJOR_VERSION = 0x821b, GL_MINOR_VERSION, GL_NUM_EXTENSIONS, GL_TIME_ELAPSED = 0x88bf, GL_TIMESTAMP = 0x8e28,
+    GL_QUERY_RESULT = 0x8866, GL_QUERY_RESULT_AVAILABLE, GL_RG = 0x8227, GL_R8 = 0x8229, GL_RG8 = 0x822b, GL_R16F = 0x822d, GL_R32F, GL_RG16F, GL_RG32F,
     GL_UNSIGNED_SHORT_5_6_5 = 0x8363, GL_MIRRORED_REPEAT = 0x8370,
     GL_COMPRESSED_RGB_S3TC_DXT1 = 0x83f0, GL_COMPRESSED_RGBA_S3TC_DXT1, GL_COMPRESSED_RGBA_S3TC_DXT3, GL_COMPRESSED_RGBA_S3TC_DXT5,
     GL_TEXTURE0 = 0x84c0, GL_MAX_RENDERBUFFER_SIZE = 0x84e8, GL_DEPTH_STENCIL = 0x84f9, GL_UNSIGNED_INT_24_8 = 0x84fa, GL_MAX_TEXTURE_LOD_BIAS = 0x84fd,
@@ -94,6 +95,11 @@ enum {
     GL_MAX_VERTEX_ATTRIBS = 0x8869, GL_MAX_TEXTURE_IMAGE_UNITS = 0x8872, GL_RGBA32F = 0x8814, GL_RGB32F, GL_RGBA16F = 0x881a, GL_RGB16F,
     GL_TEXTURE_COMPARE_MODE = 0x884c, GL_TEXTURE_COMPARE_FUNC,
     GL_ARRAY_BUFFER = 0x8892, GL_ELEMENT_ARRAY_BUFFER, GL_DEPTH24_STENCIL8 = 0x88f0, GL_UNIFORM_BUFFER = 0x8a11,
+    GL_UNIFORM_BUFFER_BINDING = 0x8a28, GL_MAX_VERTEX_UNIFORM_BLOCKS = 0x8a2b, GL_MAX_FRAGMENT_UNIFORM_BLOCKS = 0x8a2d,
+    GL_MAX_COMBINED_UNIFORM_BLOCKS = 0x8a2e, GL_MAX_UNIFORM_BUFFER_BINDINGS, GL_MAX_UNIFORM_BLOCK_SIZE,
+    GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT = 0x8a34, GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH, GL_ACTIVE_UNIFORM_BLOCKS,
+    GL_UNIFORM_BLOCK_BINDING = 0x8a3f, GL_UNIFORM_BLOCK_DATA_SIZE, GL_UNIFORM_BLOCK_NAME_LENGTH,
+    GL_UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER = 0x8a44, GL_UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER = 0x8a46,
     GL_FRAGMENT_SHADER = 0x8b30, GL_VERTEX_SHADER, GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS = 0x8b4d, GL_SHADER_TYPE = 0x8b4f, GL_DELETE_STATUS = 0x8b80, GL_COMPILE_STATUS,
     GL_LINK_STATUS, GL_VALIDATE_STATUS, GL_INFO_LOG_LENGTH, GL_ATTACHED_SHADERS, GL_ACTIVE_UNIFORMS, GL_ACTIVE_UNIFORM_MAX_LENGTH, GL_SHADER_SOURCE_LENGTH,
     GL_ACTIVE_ATTRIBUTES, GL_ACTIVE_ATTRIBUTE_MAX_LENGTH, GL_SHADING_LANGUAGE_VERSION = 0x8b8c, GL_CURRENT_PROGRAM,
@@ -117,6 +123,10 @@ enum {
     GL_UNSIGNED_INT_VEC2 = 0x8dc6, GL_UNSIGNED_INT_VEC3, GL_UNSIGNED_INT_VEC4, GL_TEXTURE_SWIZZLE_R = 0x8e42, GL_TEXTURE_SWIZZLE_A = 0x8e45,
     GL_ALREADY_SIGNALED = 0x911a, GL_TIMEOUT_EXPIRED, GL_CONDITION_SATISFIED, GL_CONTEXT_PROFILE_MASK = 0x9126,
 };
+#define GL_INVALID_INDEX ((GLuint)-1)
+#define NUBO_BINDINGS 36
+#define UBO_ALIGNMENT 256
+#define UBO_MAX_SIZE 65536
 #define GL_MAP_INVALIDATE_BUFFER_BIT 0x8
 #define GL_SYNC_FLUSH_COMMANDS_BIT 0x1
 #define GL_COLOR_BUFFER_BIT 0x4000
@@ -156,7 +166,8 @@ static int is_intt(int t) { return t >= T_INT && t <= T_BOOL; }
 typedef struct { char name[48]; uint8_t slot, type; } shattr;                         // a vertex input
 typedef struct { char name[48]; uint16_t off, count, stride; uint8_t type; } shuni;   // a default block member (count 0 = not an array)
 typedef struct { char name[48]; uint8_t slot, type; } shsamp;                         // a combined sampler: texture and sampler slot
-typedef struct { char key[17]; int frag, ub_slot, ub_size, na, nu, nt; shattr *a; shuni *u; shsamp *t; } shinfo;
+typedef struct { char name[64]; uint32_t size; uint8_t slot; } shblock;
+typedef struct { char key[17]; int frag, ub_slot, ub_size, na, nu, nt, nb; shattr *a; shuni *u; shsamp *t; shblock *b; } shinfo;
 static shinfo *g_sh; static int g_nsh;
 static int sh_cmp(const void *a, const void *b) { int c = memcmp(((const shinfo *)a)->key, ((const shinfo *)b)->key, 16); return c ? c : ((const shinfo *)a)->frag - ((const shinfo *)b)->frag; }
 static void sh_load(void) {
@@ -173,9 +184,10 @@ static void sh_load(void) {
         if (g_nsh == cap) { cap = cap ? cap * 2 : 1024; g_sh = realloc(g_sh, cap * sizeof *g_sh); }
         shinfo *s = &g_sh[g_nsh++]; memset(s, 0, sizeof *s);
         memcpy(s->key, key, 16); s->frag = !strcmp(stage, "frag"); s->ub_slot = -1;
-        int na = 0, nu = 0, nt = 0;
-        for (char *c = res; c && *c; c++) if (c == res || c[-1] == ' ') { na += *c == 'a'; nu += *c == 'u'; nt += *c == 't'; }
+        int na = 0, nu = 0, nt = 0, nb = 0;
+        for (char *c = res; c && *c; c++) if (c == res || c[-1] == ' ') { na += *c == 'a'; nu += *c == 'u'; nt += *c == 't'; nb += *c == 'n'; }
         s->a = zalloc((na + 1) * sizeof *s->a); s->u = zalloc((nu + 1) * sizeof *s->u); s->t = zalloc((nt + 1) * sizeof *s->t);
+        if (nb) s->b = zalloc(nb * sizeof *s->b);
         for (char *t = res ? strtok(res, " ") : NULL; t; t = strtok(NULL, " ")) {
             char nm[64], ty[32]; unsigned a1, a2, a3;
             if (t[0] == 'a' && sscanf(t, "a:%63[^=]=%u:%31s", nm, &a1, ty) == 3 && a1 < 16) { shattr *x = &s->a[s->na++]; strlcpy(x->name, nm, sizeof x->name); x->slot = a1; x->type = tcode(ty); }
@@ -183,6 +195,9 @@ static void sh_load(void) {
                 shuni *x = &s->u[s->nu++]; strlcpy(x->name, nm, sizeof x->name); x->off = a1; x->type = tcode(ty); x->count = a2; x->stride = a3;
             } else if (t[0] == 't' && sscanf(t, "t:%63[^=]=%u:%31s", nm, &a1, ty) == 3) { shsamp *x = &s->t[s->nt++]; strlcpy(x->name, nm, sizeof x->name); x->slot = a1; x->type = tcode(ty); }
             else if (t[0] == 'b' && sscanf(t, "b:%u:%u", &a1, &a2) == 2) { s->ub_slot = a1; s->ub_size = a2; }
+            else if (t[0] == 'n' && sscanf(t, "n:%63[^=]=%u:%u", nm, &a1, &a2) == 3 && a1 < (s->frag ? 16 : 15) && a2 && a2 <= UBO_MAX_SIZE) {
+                shblock *b = &s->b[s->nb++]; strlcpy(b->name, nm, sizeof b->name); b->slot = a1; b->size = a2;
+            }
         }
         if (s->ub_slot >= 15) GLOG("[RED] shader %s: uniform block at buffer slot %d meets the vertex buffer slots", s->key, s->ub_slot);
     }
@@ -337,11 +352,13 @@ typedef struct { pkey_t k; void *pso; } pent_t;   // pso: a retained id<MTLRende
 // amap: the game's attribute index of each Metal vertex input (glBindAttribLocation before the link, else the input's own number, which glGetAttribLocation returns);
 // LÖVE binds VertexPosition, VertexTexCoord, VertexColor and ConstantColor to 0–3 in every program
 typedef struct { char name[48]; int index; } abind_t;
+typedef struct { char name[64]; uint32_t size; GLuint binding; int slots[2]; } pblock_t;
 // vs, fs: the attached shaders, each counted in its refs; deleted: glDeleteProgram flagged it while current (it goes at the next glUseProgram of another);
 // what the link took from them (si, fn, the uniform table) is the program's own, so attaching, detaching or deleting a shader later leaves the linked program as it is
 typedef struct {
     GLuint vs, fs; int linked, deleted; const shinfo *si[2]; __strong id<MTLFunction> fn[2];
     int nu; puni_t *u; uint8_t *ub[2]; uint64_t ub_gen[2]; uint32_t serial;
+    int nb; pblock_t *blocks;
     pent_t *pc; int npc, cappc;
     abind_t bind[16]; int nbind; int8_t amap[16];
 } prog_t;
@@ -372,8 +389,11 @@ static int sp_check(GLuint n, int prog, const char *fn) {
 // units: as many as GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS says (LÖVE binds a texture of each type to every one at start); fb / read_fb: the draw and read framebuffers;
 // va: each attribute's current value (glVertexAttrib4f), what a vertex input reads when its array is disabled: LÖVE's VertexColor and ConstantColor
 #define NUNITS 96
+// A zero size denotes a whole-buffer binding; it follows a later glBufferData reallocation.
+typedef struct { GLuint buf; size_t offset, size; } ubound_t;
 static struct {
     GLuint array_buf, uniform_buf, rb, fb, read_fb, prog, vao; int unit;
+    ubound_t ubo[NUBO_BINDINGS];
     struct { GLuint t2d, tcube, t3d, t2da; } units[NUNITS];
     float clear_c[4]; double clear_d; int clear_s;
     uint8_t cmask, dmask, depth, blend, cull, scissor, stencil, poffset, srgb;
@@ -911,6 +931,21 @@ static void enc_state(void) {
     id<MTLDepthStencilState> ds = dss_get();
     if ((__bridge void *)ds != E.dss) { E.dss = (__bridge void *)ds; [e setDepthStencilState:ds]; }
 }
+static int bind_uniform_blocks(prog_t *p, id<MTLRenderCommandEncoder> e) {
+    for (int i = 0; i < p->nb; i++) {
+        const pblock_t *block = &p->blocks[i];
+        const ubound_t *r = &S.ubo[block->binding];
+        buf_t *b = buf_of(r->buf);
+        if (!b || !b->mb || r->offset > b->size || block->size > b->size - r->offset || (r->size && block->size > r->size)) {
+            RED1("uniform block %s: binding %u needs %u bytes in the bound range", block->name, block->binding, block->size);
+            return 0;
+        }
+        if (block->slots[0] >= 0) [e setVertexBuffer:b->mb offset:r->offset atIndex:block->slots[0]];
+        if (block->slots[1] >= 0) [e setFragmentBuffer:b->mb offset:r->offset atIndex:block->slots[1]];
+        b->use = g_serial;
+    }
+    return 1;
+}
 static void bind_uniforms_textures(prog_t *p) {
     id<MTLRenderCommandEncoder> e = g_enc;
     for (int st = 0; st < 2; st++) {
@@ -1008,6 +1043,7 @@ static int draw_setup(void) {
         else if (a->on) { const vbind_t *vb = vb_of(v, gi); buf_t *b = buf_of(vb->buf); b->use = g_serial; [e setVertexBuffer:b->mb offset:vb->off + a->rel atIndex:30 - s]; }
         else [e setVertexBytes:S.va[gi] length:16 atIndex:30 - s];
     }
+    if (!bind_uniform_blocks(p, e)) { g_sk_prog++; return 0; }
     bind_uniforms_textures(p);
     g_n_draw++;
     // DM_GL_DRAWLOG=<n>[:<seconds>]: the first n draws after <seconds> of run time (default 0) with their target, viewport, scissor box and program
@@ -1255,6 +1291,90 @@ GL(glPushGroupMarkerEXT, void, GLsizei len, const GLchar *msg) { (void)len; (voi
 GL(glPopGroupMarkerEXT, void, void) {}
 GL(glObjectLabel, void, GLenum id, GLuint name, GLsizei len, const GLchar *label) { (void)id; (void)name; (void)len; (void)label; }
 
+// ---------- GPU timer queries ----------
+// A timestamp closes and submits the current Metal command buffer. Its completion timestamp
+// marks the query point on the GPU timeline, including on devices that cannot sample between draws.
+typedef struct {
+    GLenum target;
+    __strong id<MTLCommandBuffer> start, end;
+    uint64_t result;
+    int cached;
+} gl_query_t;
+NAMES(gl_query_t, g_queries, g_nqueries, g_capqueries)
+static gl_query_t *g_elapsed_query;
+
+static gl_query_t *query_of(GLuint q) { return q && q < g_nqueries ? g_queries[q] : NULL; }
+static void query_free(gl_query_t *q) { q->start = q->end = nil; free(q); }
+
+static id<MTLCommandBuffer> query_mark(void) {
+    if (g_pend_clear.bits) clears_flush();
+    dm_gfx_enter();
+    id<MTLCommandBuffer> cb = cb_get();
+    cb_commit();
+    dm_gfx_leave();
+    return cb;
+}
+GL(glGenQueries, void, GLsizei count, GLuint *queries) {
+    if (count < 0) { gl_error(GL_INVALID_VALUE); return; }
+    for (GLsizei i = 0; i < count; i++) queries[i] = name_new((void ***)&g_queries, &g_nqueries, &g_capqueries, sizeof(gl_query_t));
+}
+GL(glDeleteQueries, void, GLsizei count, const GLuint *queries) {
+    if (count < 0) { gl_error(GL_INVALID_VALUE); return; }
+    for (GLsizei i = 0; i < count; i++) {
+        gl_query_t *q = query_of(queries[i]);
+        if (!q) continue;
+        g_queries[queries[i]] = NULL;
+        if (q == g_elapsed_query) g_elapsed_query = NULL;
+        query_free(q);
+    }
+}
+GLB(glBeginQuery, void, GLenum target, GLuint name) {
+    if (target != GL_TIME_ELAPSED) { RED1("glBeginQuery target %#x not implemented", target); return; }
+    gl_query_t *q = query_of(name);
+    if (g_elapsed_query || !q || (q->target && q->target != target)) { gl_error(GL_INVALID_OPERATION); return; }
+    q->target = target; q->cached = 0; q->end = nil; q->start = query_mark(); g_elapsed_query = q;
+}
+GLB(glEndQuery, void, GLenum target) {
+    if (target != GL_TIME_ELAPSED) { RED1("glEndQuery target %#x not implemented", target); return; }
+    if (!g_elapsed_query) { gl_error(GL_INVALID_OPERATION); return; }
+    g_elapsed_query->end = query_mark();
+    g_elapsed_query = NULL;
+}
+GLB(glQueryCounter, void, GLuint name, GLenum target) {
+    if (target != GL_TIMESTAMP) { gl_error(GL_INVALID_ENUM); return; }
+    gl_query_t *q = query_of(name);
+    if (!q || (q->target && q->target != target)) { gl_error(GL_INVALID_OPERATION); return; }
+    q->target = target; q->cached = 0; q->end = query_mark();
+}
+static int query_value(GLuint name, GLenum what, uint64_t *result, const char *fn) {
+    gl_query_t *q = query_of(name);
+    if (!q || (!q->end && !q->cached)) { gl_error_at(GL_INVALID_OPERATION, fn); return 0; }
+    if (what == GL_QUERY_RESULT_AVAILABLE) {
+        *result = q->cached || q->end.status >= MTLCommandBufferStatusCompleted;
+        return 1;
+    }
+    if (what != GL_QUERY_RESULT) { gl_error_at(GL_INVALID_ENUM, fn); return 0; }
+    if (!q->cached) {
+        [q->end waitUntilCompleted];
+        double end = q->end.GPUEndTime, start = q->start ? q->start.GPUEndTime : 0;
+        if (q->end.status != MTLCommandBufferStatusCompleted || end <= 0 ||
+            (q->start && (q->start.status != MTLCommandBufferStatusCompleted || start <= 0)) || end < start) {
+            RED1("Metal did not provide a valid GPU timestamp for this query");
+            gl_error_at(GL_INVALID_OPERATION, fn); return 0;
+        }
+        q->result = (uint64_t)llround((end - start) * 1e9);
+        q->cached = 1;
+        q->start = q->end = nil;
+    }
+    *result = q->result;
+    return 1;
+}
+GLB(glGetQueryObjecti64v, void, GLuint name, GLenum what, int64_t *result) {
+    uint64_t value;
+    if (query_value(name, what, &value, __func__)) *result = value > INT64_MAX ? INT64_MAX : (int64_t)value;
+}
+GLB(glGetQueryObjectui64v, void, GLuint name, GLenum what, uint64_t *result) { query_value(name, what, result, __func__); }
+
 // ---------- Queries ----------
 static const char *const g_exts[] = {"GL_ARB_ES3_2_compatibility", "GL_ARB_ES3_compatibility", "GL_ARB_texture_compression_bptc", "GL_ARB_texture_compression_rgtc",
     "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_filter_anisotropic", "GL_ARB_vertex_array_object", "GL_ARB_direct_state_access", "GL_ARB_half_float_vertex",
@@ -1303,7 +1423,13 @@ GL(glGetIntegerv, void, GLenum p, GLint *v) {
         case GL_CURRENT_PROGRAM: *v = S.prog; return;
         case 0x8894: *v = S.array_buf; return;   // ARRAY_BUFFER_BINDING
         case 0x8895: *v = cur_vao()->ebo; return;   // ELEMENT_ARRAY_BUFFER_BINDING
-        case 0x8a28: *v = S.uniform_buf; return;   // UNIFORM_BUFFER_BINDING
+        case GL_UNIFORM_BUFFER_BINDING: *v = S.uniform_buf; return;
+        case GL_MAX_VERTEX_UNIFORM_BLOCKS: *v = 15; return;
+        case GL_MAX_FRAGMENT_UNIFORM_BLOCKS: *v = 16; return;
+        case GL_MAX_COMBINED_UNIFORM_BLOCKS: *v = 31; return;
+        case GL_MAX_UNIFORM_BUFFER_BINDINGS: *v = NUBO_BINDINGS; return;
+        case GL_MAX_UNIFORM_BLOCK_SIZE: *v = UBO_MAX_SIZE; return;
+        case GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT: *v = UBO_ALIGNMENT; return;
         case 0x85b5: *v = S.vao; return;   // VERTEX_ARRAY_BINDING
         case 0x8069: *v = S.units[S.unit].t2d; return;   // TEXTURE_BINDING_2D
         case GL_TEXTURE_BINDING_CUBE_MAP: *v = S.units[S.unit].tcube; return;
@@ -1339,6 +1465,7 @@ GL(glDeleteBuffers, void, GLsizei n, const GLuint *b) {
         vao_t *v = cur_vao();
         if (S.array_buf == b[i]) S.array_buf = 0; if (S.uniform_buf == b[i]) S.uniform_buf = 0; if (v->ebo == b[i]) v->ebo = 0;
         for (int j = 0; j < 16; j++) if (v->b[j].buf == b[i]) v->b[j].buf = 0;
+        for (int j = 0; j < NUBO_BINDINGS; j++) if (S.ubo[j].buf == b[i]) S.ubo[j] = (ubound_t){0};
     }
 }
 GL(glBindBuffer, void, GLenum target, GLuint b) {
@@ -1347,15 +1474,21 @@ GL(glBindBuffer, void, GLenum target, GLuint b) {
     else if (target == GL_UNIFORM_BUFFER) S.uniform_buf = b;
     else RED1("glBindBuffer target %#x not implemented", target);
 }
-// Both also bind the generic target, which the buffer calls on GL_UNIFORM_BUFFER use. The indexed uniform-buffer bindings are not kept: gl_shaders.py
-// translates a shader only when its uniforms are the default block (a named block makes it refuse the shader), so no translated shader reads one
+// Indexed UBO calls also bind the generic target, which glBufferData and friends use.
+static void bind_uniform_buffer(GLuint index, GLuint buffer, size_t offset, size_t size) {
+    if (index >= NUBO_BINDINGS) { gl_error(GL_INVALID_VALUE); return; }
+    if (buffer && !buf_of(buffer)) { gl_error(GL_INVALID_OPERATION); return; }
+    S.ubo[index] = buffer ? (ubound_t){buffer, offset, size} : (ubound_t){0};
+    S.uniform_buf = buffer;
+}
 GL(glBindBufferRange, void, GLenum target, GLuint index, GLuint b, GLintptr off, GLsizeiptr size) {
-    (void)index; (void)off; (void)size;
-    if (target == GL_UNIFORM_BUFFER) S.uniform_buf = b; else RED1("glBindBufferRange target %#x not implemented", target);
+    if (target != GL_UNIFORM_BUFFER) { RED1("glBindBufferRange target %#x not implemented", target); return; }
+    if (b && (off < 0 || size <= 0 || off % UBO_ALIGNMENT)) { gl_error(GL_INVALID_VALUE); return; }
+    bind_uniform_buffer(index, b, off, size);
 }
 GL(glBindBufferBase, void, GLenum target, GLuint index, GLuint b) {
-    (void)index;
-    if (target == GL_UNIFORM_BUFFER) S.uniform_buf = b; else RED1("glBindBufferBase target %#x not implemented", target);
+    if (target != GL_UNIFORM_BUFFER) { RED1("glBindBufferBase target %#x not implemented", target); return; }
+    bind_uniform_buffer(index, b, 0, 0);
 }
 static buf_t *bound_buf(GLenum target) {
     return buf_of(target == GL_ARRAY_BUFFER ? S.array_buf : target == GL_ELEMENT_ARRAY_BUFFER ? cur_vao()->ebo : target == GL_UNIFORM_BUFFER ? S.uniform_buf : 0);
@@ -1848,6 +1981,27 @@ static void prog_clear(prog_t *p) {
     for (int i = 0; i < p->npc; i++) if (p->pc[i].pso) CFRelease(p->pc[i].pso);
     free(p->pc); p->pc = NULL; p->npc = p->cappc = 0;
     free(p->u); p->u = NULL; p->nu = 0; free(p->ub[0]); free(p->ub[1]); p->ub[0] = p->ub[1] = NULL; p->fn[0] = p->fn[1] = nil; p->linked = 0;
+    free(p->blocks); p->blocks = NULL; p->nb = 0;
+}
+static void prog_link_blocks(prog_t *p) {
+    int limit = p->si[0]->nb + p->si[1]->nb;
+    if (!limit) return;
+    p->blocks = zalloc(limit * sizeof *p->blocks);
+    for (int st = 0; st < 2; st++) {
+        const shinfo *s = p->si[st];
+        for (int i = 0; i < s->nb; i++) {
+            const shblock *b = &s->b[i];
+            int j = 0; while (j < p->nb && strcmp(b->name, p->blocks[j].name)) j++;
+            pblock_t *pb = &p->blocks[j];
+            if (j == p->nb) {
+                strlcpy(pb->name, b->name, sizeof pb->name);
+                pb->slots[0] = pb->slots[1] = -1;
+                p->nb++;
+            }
+            pb->slots[st] = b->slot;
+            pb->size = umax(pb->size, b->size);
+        }
+    }
 }
 // Uniforms are merged by name over both stages, as GL links them; a location is uniform index × 4096 + array element
 GLB(glLinkProgram, void, GLuint pr) {
@@ -1882,6 +2036,7 @@ GLB(glLinkProgram, void, GLuint pr) {
         int g = vi->a[i].slot; for (int n = 0; n < 16 && (taken >> g & 1); n++) g = (g + 1) % 16;
         p->amap[vi->a[i].slot] = (int8_t)g; taken |= 1u << g;
     }
+    prog_link_blocks(p);
     p->serial = ++serials; p->ub_gen[0]++; p->ub_gen[1]++; p->linked = 1;
     OLOG("LinkProgram %u: vs %s fs %s, %d uniforms", pr, vs->key, fs->key, p->nu);
 }
@@ -1901,12 +2056,58 @@ GL(glGetProgramiv, void, GLuint pr, GLenum p, GLint *v) {
         case GL_LINK_STATUS: case GL_VALIDATE_STATUS: *v = 1; return;   // as glGetShaderiv's compile status
         case GL_INFO_LOG_LENGTH: *v = 0; return;
         case GL_ACTIVE_UNIFORMS: *v = x->nu; return;
+        case GL_ACTIVE_UNIFORM_BLOCKS: *v = x->nb; return;
+        case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH: {
+            uint32_t length = 0;
+            for (int i = 0; i < x->nb; i++) length = umax(length, (uint32_t)strlen(x->blocks[i].name) + 1);
+            *v = (GLint)length; return;
+        }
         case GL_ACTIVE_UNIFORM_MAX_LENGTH: { int m = 0; for (int i = 0; i < x->nu; i++) m = (int)umax(m, (uint32_t)strlen(x->u[i].name) + 4); *v = m; return; }
         case GL_ATTACHED_SHADERS: *v = (x->vs != 0) + (x->fs != 0); return;
         case GL_ACTIVE_ATTRIBUTES: *v = x->si[0] ? x->si[0]->na : 0; return;
         case GL_DELETE_STATUS: *v = x->deleted; return;
     }
     RED1("glGetProgramiv(%#x) not implemented", p); *v = 0;
+}
+GL(glGetUniformBlockIndex, GLuint, GLuint pr, const GLchar *name) {
+    if (!SP_CHECK(pr, 1)) return GL_INVALID_INDEX;
+    const prog_t *p = prog_of(pr);
+    if (!p->linked) { gl_error(GL_INVALID_OPERATION); return GL_INVALID_INDEX; }
+    for (int i = 0; i < p->nb; i++) if (!strcmp(p->blocks[i].name, name)) return (GLuint)i;
+    return GL_INVALID_INDEX;
+}
+static pblock_t *prog_block(GLuint pr, GLuint index, const char *fn) {
+    if (!sp_check(pr, 1, fn)) return NULL;
+    prog_t *p = prog_of(pr);
+    if (!p->linked) { gl_error_at(GL_INVALID_OPERATION, fn); return NULL; }
+    if (index >= (GLuint)p->nb) { gl_error_at(GL_INVALID_VALUE, fn); return NULL; }
+    return &p->blocks[index];
+}
+GL(glUniformBlockBinding, void, GLuint pr, GLuint index, GLuint binding) {
+    pblock_t *b = prog_block(pr, index, __func__);
+    if (!b) return;
+    if (binding >= NUBO_BINDINGS) { gl_error(GL_INVALID_VALUE); return; }
+    b->binding = binding;
+}
+GL(glGetActiveUniformBlockName, void, GLuint pr, GLuint index, GLsizei capacity, GLsizei *length, GLchar *name) {
+    const pblock_t *b = prog_block(pr, index, __func__);
+    if (!b) return;
+    if (capacity < 0) { gl_error(GL_INVALID_VALUE); return; }
+    if (capacity && name) strlcpy(name, b->name, capacity);
+    if (length) *length = capacity && name ? (GLsizei)umin((uint32_t)strlen(b->name), (uint32_t)capacity - 1) : 0;
+}
+GL(glGetActiveUniformBlockiv, void, GLuint pr, GLuint index, GLenum query, GLint *value) {
+    const pblock_t *b = prog_block(pr, index, __func__);
+    if (!b) return;
+    switch (query) {
+        case GL_UNIFORM_BLOCK_BINDING: *value = (GLint)b->binding; return;
+        case GL_UNIFORM_BLOCK_DATA_SIZE: *value = (GLint)b->size; return;
+        case GL_UNIFORM_BLOCK_NAME_LENGTH: *value = (GLint)strlen(b->name) + 1; return;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER: *value = b->slots[0] >= 0; return;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER: *value = b->slots[1] >= 0; return;
+    }
+    RED1("glGetActiveUniformBlockiv(%#x) not implemented", query);
+    *value = 0;
 }
 static void prog_free(GLuint pr) {   // the program goes, and its attachments with it
     prog_t *p = &g_sps[pr]->p; prog_clear(p); shader_release(&p->vs); shader_release(&p->fs); free(g_sps[pr]); g_sps[pr] = NULL;

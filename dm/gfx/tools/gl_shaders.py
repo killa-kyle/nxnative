@@ -18,6 +18,7 @@
 #   a:<name>=<slot>:<type>                       a vertex input, [[attribute(slot)]]
 #   u:<name>=<offset>:<type>:<count>:<stride>    a member of the default uniform block (count 0 = not an array)
 #   b:<slot>:<size>                              the default uniform block: its buffer slot and size in bytes
+#   n:<name>=<slot>:<size>                       a named std140 uniform block: its Metal slot and required buffer bytes
 #   t:<name>=<slot>:<type>                       a combined sampler: texture and sampler slot
 #   o:<name>=<location>                          a fragment output, [[color(location)]]
 # <TAB> where it came from
@@ -164,8 +165,18 @@ def translate(src, stage, key, tmp):
     bools = {n for n in re.findall(r'\buniform\s+(?:(?:lowp|mediump|highp)\s+)?bool\s+(\w+)\s*;', pre)}
     for u in refl.get('ubos', []):
         t = refl['types'][u['type']]
-        if t['name'] != 'gl_DefaultUniformBlock': return f'uniform block {t["name"]} is not the default block'
-        f.append(f'b:{u["binding"]}:{u["block_size"]}')
+        name, slot, size = t['name'], u['binding'], u['block_size']
+        if slot >= (15 if stage == 'vert' else 16): return f'uniform block {name}: buffer slot {slot} is reserved'
+        if name != 'gl_DefaultUniformBlock':
+            # A reflected binding is the auto-mapped Metal slot, not the GL binding point.
+            # The GL binding initially defaults to zero unless GLSL declares a binding.
+            decl = re.search(rf'((?:layout\s*\([^)]*\)\s*)*)uniform\s+{re.escape(name)}\s*{{', pre)
+            qualifiers = re.findall(r'\b(std140|std430|shared|packed|binding)\b', decl[1]) if decl else []
+            if qualifiers != ['std140'] or u.get('array') or not size or size > 65536 or len(name) >= 64:
+                return f'uniform block {name}: only non-array std140 blocks without an explicit binding are supported'
+            f.append(f'n:{name}={slot}:{(size + 15) & ~15}')
+            continue
+        f.append(f'b:{slot}:{size}')
         e = uni_members(refl, t['members'], '', 0, f, bools)
         if e: return e
     for t in refl.get('textures', []):
@@ -220,7 +231,7 @@ def main():
         for key, where, errs in failed:
             if not any(k == key for k, _ in seen): print(f'[RED] {where} ({key}) does not translate: {" / ".join(errs)}')
         tsv = ['# GL shaders (dm/gfx/tools/gl_shaders.py): key = sha256(GLSL source)[:16], Metal function gl_<key>_v / gl_<key>_f; a: vertex inputs, u: default uniform block members '
-               '(offset:type:count:stride), b: the block (slot:size), t: combined samplers (slot:type), o: fragment outputs',
+               '(offset:type:count:stride), b: the default block (slot:size), n: named std140 blocks (slot:size), t: combined samplers (slot:type), o: fragment outputs',
                '# ' + ' '.join(subprocess.run(['glslangValidator', '--version'], capture_output=True, text=True).stdout.split()[:3]) + '; spirv-cross '
                + ' '.join((lambda r: r.stdout + r.stderr)(subprocess.run([SPIRV_CROSS, '--revision'], capture_output=True, text=True)).split())]
         tsv += [f'{k[0]}\t{v[0]}\t{" ".join(v[1])}\t{v[3]}' for k, v in sorted(seen.items())]

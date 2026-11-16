@@ -191,6 +191,83 @@ static void test_uniform_buffer(void) {
     del_buf(1, &b[1]); assert(!S.array_buf);
 }
 
+static void test_named_uniform_blocks(void) {
+    // A shared block links by GLSL name even when its Metal slots differ by stage.
+    static shblock vertex[] = {{.name = "Shared", .size = 16, .slot = 1}};
+    static shblock fragment[] = {{.name = "Shared", .size = 16, .slot = 2}};
+    static shinfo stages[] = {{.nb = 1, .b = vertex}, {.nb = 1, .b = fragment}};
+    GLuint pr = h_glCreateProgram();
+    prog_t *p = prog_of(pr); p->si[0] = &stages[0]; p->si[1] = &stages[1]; p->linked = 1;
+    prog_link_blocks(p);
+    assert(import("glGetUniformBlockIndex") == (void *)h_glGetUniformBlockIndex);
+    assert(h_glGetUniformBlockIndex(pr, "Shared") == 0 && h_glGetUniformBlockIndex(pr, "Missing") == GL_INVALID_INDEX);
+    assert(p->nb == 1 && p->blocks[0].slots[0] == 1 && p->blocks[0].slots[1] == 2);
+    GLint value;
+    h_glGetActiveUniformBlockiv(pr, 0, GL_UNIFORM_BLOCK_DATA_SIZE, &value); assert(value == 16);
+    h_glGetActiveUniformBlockiv(pr, 0, GL_UNIFORM_BLOCK_BINDING, &value); assert(value == 0);
+    h_glUniformBlockBinding(pr, 0, 3);
+    h_glGetActiveUniformBlockiv(pr, 0, GL_UNIFORM_BLOCK_BINDING, &value); assert(value == 3);
+    GLuint buffer; h_glGenBuffers(1, &buffer);
+    h_glBindBuffer(GL_UNIFORM_BUFFER, buffer);
+    float bytes[128] = {0}; bytes[64] = bytes[67] = 1;
+    h_glBufferData(GL_UNIFORM_BUFFER, sizeof bytes, bytes, 0);
+    h_glBindBufferRange(GL_UNIFORM_BUFFER, 3, buffer, 4, 16); assert(h_glGetError() == GL_INVALID_VALUE);
+    h_glBindBufferRange(GL_UNIFORM_BUFFER, 3, buffer, 256, 8);
+    assert(!bind_uniform_blocks(p, nil));   // too short; no unchecked GPU buffer reference
+    h_glBindBufferRange(GL_UNIFORM_BUFFER, 3, buffer, 256, 16);
+    assert(S.ubo[3].buf == buffer && S.ubo[3].offset == 256);
+    static NSString *const source = @"#include <metal_stdlib>\nusing namespace metal;\n"
+        @"vertex float4 v(uint i [[vertex_id]], constant float4 &b [[buffer(1)]]) {"
+          " const float2 points[] = {{-1, -1}, {3, -1}, {-1, 3}}; return float4(points[i] * b.x, 0, 1); }\n"
+        @"fragment float4 f(constant float4 &b [[buffer(2)]]) { return b; }";
+    id<MTLLibrary> lib = [g_dev newLibraryWithSource:source options:nil error:nil]; assert(lib);
+    MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+    pd.vertexFunction = [lib newFunctionWithName:@"v"]; pd.fragmentFunction = [lib newFunctionWithName:@"f"];
+    pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+    id<MTLRenderPipelineState> pipeline = [g_dev newRenderPipelineStateWithDescriptor:pd error:nil]; assert(pipeline);
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget; td.storageMode = MTLStorageModeShared;
+    id<MTLTexture> tex = [g_dev newTextureWithDescriptor:td];
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = tex; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLCommandBuffer> cb = cb_get();
+    id<MTLRenderCommandEncoder> encoder = [cb renderCommandEncoderWithDescriptor:rp];
+    [encoder setRenderPipelineState:pipeline];
+    assert(bind_uniform_blocks(p, encoder) && buf_of(buffer)->use == g_serial);
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [encoder endEncoding]; cb_commit(); [cb waitUntilCompleted];
+    assert(cb.status == MTLCommandBufferStatusCompleted);
+    uint8_t pixel[4]; [tex getBytes:pixel bytesPerRow:4 fromRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0];
+    assert(pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255);
+    h_glDeleteBuffers(1, &buffer);
+    assert(!S.ubo[3].buf && !bind_uniform_blocks(p, nil));
+    h_glDeleteProgram(pr);
+}
+static void test_timer_queries(void) {
+    GLuint names[3];
+    assert(import("glGenQueries") == (void *)h_glGenQueries);
+    assert(import("glQueryCounter") == (void *)h_glQueryCounter_bs);
+    h_glGenQueries(3, names);
+    assert(names[0] && names[1] != names[0] && names[2] != names[1]);
+    h_glQueryCounter(names[0], GL_TIMESTAMP);
+    h_glBeginQuery(GL_TIME_ELAPSED, names[1]);
+    id<MTLBuffer> buf = [g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];
+    id<MTLBlitCommandEncoder> blit = [cb_get() blitCommandEncoder];
+    [blit fillBuffer:buf range:NSMakeRange(0, 256) value:42]; [blit endEncoding];
+    h_glEndQuery(GL_TIME_ELAPSED);
+    h_glQueryCounter(names[2], GL_TIMESTAMP);
+    int64_t first = -1, elapsed = -1, last = -1, available = 0;
+    h_glGetQueryObjecti64v(names[0], GL_QUERY_RESULT, &first);
+    h_glGetQueryObjecti64v(names[1], GL_QUERY_RESULT, &elapsed);
+    h_glGetQueryObjecti64v(names[2], GL_QUERY_RESULT, &last);
+    h_glGetQueryObjecti64v(names[2], GL_QUERY_RESULT_AVAILABLE, &available);
+    assert(available && first > 0 && last > first && elapsed > 0 && elapsed <= last - first);
+    assert(((const uint8_t *)buf.contents)[0] == 42);
+    h_glDeleteQueries(3, names);
+    assert(!query_of(names[0]) && !query_of(names[1]) && !query_of(names[2]));
+}
+
 int main(int argc, char **argv) {
     (void)argv;
     int stubs = argc > 1;
@@ -295,6 +372,8 @@ int main(int argc, char **argv) {
     test_vertex_binding();
     test_literal_stride_fetch();
     test_uniform_buffer();
+    test_named_uniform_blocks();
+    test_timer_queries();
 
     unsigned long sz;
     const hle_ent *sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &sz);
@@ -313,6 +392,6 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, the uniform buffer target, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block draws, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }
