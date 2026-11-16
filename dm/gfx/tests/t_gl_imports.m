@@ -413,6 +413,30 @@ static void test_integer_color_clear(void) {
     h_glDisable(GL_SCISSOR_TEST); h_glColorMask(1, 1, 1, 1);
     h_glBindFramebuffer(GL_FRAMEBUFFER, 0); h_glDeleteFramebuffers(1, &fb); h_glDeleteTextures(1, &texture);
 }
+static void test_framebuffer_copy_to_volume(void) {
+    assert(h_eglGetProcAddress("glCopyTexSubImage3D") == (void *)h_glCopyTexSubImage3D);
+    GLuint fb, textures[2];
+    h_glGenFramebuffers(1, &fb);
+    h_glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    h_glGenTextures(2, textures);
+    h_glBindTexture(GL_TEXTURE_2D, textures[0]);
+    const uint8_t source[] = {1, 2, 3, 4, 11, 12, 13, 14};
+    h_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, source);
+    h_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textures[0], 0);
+    h_glBindTexture(GL_TEXTURE_3D, textures[1]);
+    const uint8_t initial[16] = {0};
+    h_glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, 2, 1, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, initial);
+    h_glCopyTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 1, 1, 0, 1, 1);
+    id<MTLCommandBuffer> cb = cb_get(); cb_commit(); [cb waitUntilCompleted];
+    assert(cb.status == MTLCommandBufferStatusCompleted && h_glGetError() == GL_NO_ERROR);
+    uint8_t actual[4];
+    [tex_of(textures[1])->tex getBytes:actual bytesPerRow:4 bytesPerImage:4
+                            fromRegion:MTLRegionMake3D(0, 0, 1, 1, 1, 1) mipmapLevel:0 slice:0];
+    assert(memcmp(actual, source + 4, sizeof actual) == 0);
+    h_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    h_glDeleteFramebuffers(1, &fb);
+    h_glDeleteTextures(2, textures);
+}
 static void test_packed_image_copy(void) {
     assert(import("glCopyImageSubData") == (void *)h_glCopyImageSubData);
     assert(h_eglGetProcAddress("glCopyImageSubData") == (void *)h_glCopyImageSubData);
@@ -718,6 +742,7 @@ int main(int argc, char **argv) {
     test_multiple_color_attachments();
     test_integer_instanced_vertex_fetch();
     test_integer_color_clear();
+    test_framebuffer_copy_to_volume();
     test_packed_image_copy();
     test_texture_readback();
     test_s3tc_readback();
