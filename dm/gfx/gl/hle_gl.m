@@ -1832,11 +1832,37 @@ GL(glSamplerParameteriv, void, GLuint name, GLenum p, const GLint *v) {
 typedef struct { GLenum target; GLint level, ifmt, x, y; GLsizei w, h; GLenum format, type; const void *pixels; GLsizei size; int sub, compressed; } teximg_args;
 static void teximg_impl(const teximg_args *a) __attribute__((used));
 BIGSTUB(teximg_impl);
+static void compressed_subimage(const teximg_args *a, tex_t *t, int face) {
+    const char *fn = "glCompressedTexSubImage2D";
+    if (a->level < 0 || a->level >= MAXLV || a->x < 0 || a->y < 0 || a->w < 0 || a->h < 0 || a->size < 0) {
+        gl_error_at(GL_INVALID_VALUE, fn); return;
+    }
+    if (!a->w || !a->h) return;
+    if (!t || t->fmt < 0 || !a->pixels) { gl_error_at(GL_INVALID_OPERATION, fn); return; }
+    int conversion;
+    if (fmt_pick(a->ifmt, 0, 0, &conversion) != t->fmt || g_fmt[t->fmt].kind != K_BLOCK) {
+        gl_error_at(GL_INVALID_OPERATION, fn); return;
+    }
+    if ((!t->made && !tex_make(t, 0)) || !t->tex || a->level >= t->levels) {
+        gl_error_at(GL_INVALID_OPERATION, fn); return;
+    }
+    const fmt_t *format = &g_fmt[t->fmt];
+    uint32_t w = umax(1, t->w >> a->level), h = umax(1, t->h >> a->level);
+    size_t right = (size_t)a->x + a->w, bottom = (size_t)a->y + a->h;
+    size_t pitch = fmt_pitch(t->fmt, a->w);
+    if (right > w || bottom > h || a->x % format->bw || a->y % format->bh ||
+        (a->w % format->bw && right != w) || (a->h % format->bh && bottom != h) ||
+        (size_t)a->size != pitch * fmt_rows(t->fmt, a->h)) {
+        gl_error_at(GL_INVALID_VALUE, fn); return;
+    }
+    tex_write(t, face, a->level, a->x, a->y, 0, a->w, a->h, a->pixels, pitch);
+}
 static void teximg_impl(const teximg_args *a) {
     @autoreleasepool {
         if (a->sub) {
             tex_t *t = bound_tex(a->target);
             int face = a->target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && a->target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z ? (int)(a->target - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
+            if (a->compressed) { compressed_subimage(a, t, face); return; }
             if (!t || t->fmt < 0 || a->w <= 0 || a->h <= 0) return;
             int f = t->fmt, cv = CV_COPY;   // the data is converted to the texture's format
             if (f == F_RGBA8) cv = a->type == GL_UNSIGNED_SHORT_5_6_5 ? CV_565 : a->type == GL_UNSIGNED_SHORT_4_4_4_4 ? CV_4444 : a->type == GL_UNSIGNED_SHORT_5_5_5_1 ? CV_5551 :
@@ -1864,6 +1890,11 @@ static void teximg_impl(const teximg_args *a) {
         } else conv = pixels_convert(cv == CV_NONE ? NULL : a->pixels, a->w, a->h, a->format, a->type, f, cv, &pitch);
         tex_image(a->target, a->level, f, cv, a->w, a->h, a->pixels || a->compressed ? conv : (free(conv), (void *)NULL), pitch);
     }
+}
+GL(glCompressedTexSubImage2D, void, GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h,
+    GLenum format, GLsizei size, const void *data) {
+    teximg_args a = {target, level, (GLint)format, x, y, w, h, 0, 0, data, size, 1, 1};
+    ((void (*)(const teximg_args *))(const void *)teximg_impl_bs)(&a);
 }
 GL(glGetTexLevelParameteriv, void, GLenum target, GLint level, GLenum what, GLint *value) {
     if (!value) return;

@@ -2077,6 +2077,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** Report the actual stored block size for the requested mip and read the packed blocks through the shared Metal transfer path without applying ordinary uncompressed pixel row alignment.
 - **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. Both Mac loader modes compare the queried sizes and exact packed BC3 data at two mip levels. Post-fix Duo gameplay remains unverified.
 
+### OpenGL compressed sprite region uploads
+
+- **Symptom:** Factorio passes its texture processor self-test and exits after starting the parallel sprite loader.
+- **Cause:** The 2D sprite upload calls an unresolved `glCompressedTexSubImage2D` at `main+0x94c75c`.
+- **Fix:** Validate the texture mip, compressed format, block bounds and input size. Use the existing Metal texture upload path to replace only the requested compressed region in command order.
+- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac regression replaces only the bottom BC3 block after a queued texture copy and verifies the untouched top block and new bottom block by GPU readback. Post-fix Duo gameplay remains unverified.
+
 ### GL textures, swizzles and uploads
 
 - Textures are made on first use from the levels given so far (Digimon's loader defines them level by level). An upload into a texture a pending command buffer may still read is a blit in command order; any other is a CPU write. Metal reads a channel a format lacks as 0 (alpha 1) as GL does, so only luminance / alpha formats get a swizzle: Metal refuses a swizzle on a texture that can be a render target (`Texture swizzling is not compatable with MTLTextureUsageRenderTarget`, Digimon's first story scene).

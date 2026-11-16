@@ -500,7 +500,18 @@ static void test_s3tc_readback(void) {
     assert(h_glGetError() == GL_NO_ERROR);
     for (int i = 0; i < 8; i++)
         assert(mip[i][0] == 0 && mip[i][1] == 0 && mip[i][2] == 255 && mip[i][3] == 127);
-    h_glDeleteTextures(1, &texture);
+
+    assert(import("glCompressedTexSubImage2D") == (void *)h_glCompressedTexSubImage2D);
+    GLuint dest; h_glGenTextures(1, &dest); h_glBindTexture(GL_TEXTURE_2D, dest);
+    h_glTexStorage2D(GL_TEXTURE_2D, 1, GL_COMPRESSED_RGBA_S3TC_DXT5, 4, 8);
+    h_glCopyImageSubData(texture, GL_TEXTURE_2D, 0, 0, 0, 0, dest, GL_TEXTURE_2D, 0, 0, 0, 0, 4, 8, 1);
+    h_glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 0, 4, 4, 4, GL_COMPRESSED_RGBA_S3TC_DXT5, sizeof blue, blue);
+    h_glGetCompressedTexImage(GL_TEXTURE_2D, 0, compressed);
+    assert(h_glGetError() == GL_NO_ERROR);
+    assert(memcmp(compressed, blocks[0], 16) == 0 && memcmp(compressed + 16, blue, 16) == 0);
+    h_glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 0, 2, 4, 4, GL_COMPRESSED_RGBA_S3TC_DXT5, sizeof blue, blue);
+    assert(h_glGetError() == GL_INVALID_VALUE);
+    h_glDeleteTextures(1, &dest); h_glDeleteTextures(1, &texture);
 }
 static void test_timer_queries(void) {
     GLuint names[3];
