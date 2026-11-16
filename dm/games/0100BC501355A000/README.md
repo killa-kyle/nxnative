@@ -22,8 +22,8 @@ A local proof of concept replaces five fixed-width UTF-16 fields in two cooked
 exports. The Mac host opens the version 8 patch pak through
 `DM_ROMFS_OVERLAY`, and the new-save prompt rendered its English sentence.
 The confirmation button and control hints on the same screen still need
-translation. The four other menu strings and iOS overlay delivery are pending
-visual validation.
+translation. The probe also stages English menu headers, save-slot labels and autosave
+messages. Those additions and iOS overlay delivery are pending visual validation.
 
 Run `build_english_probe.py <RomFS.img> <overlay directory> --repak <repak>`
 with repak 0.2.3. The script checks each original export’s fingerprint and

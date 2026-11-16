@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a local RomFS overlay for five Densha 1.0.0 UI strings."""
+"""Build a local RomFS overlay for early Densha 1.0.0 menus."""
 import argparse
 import hashlib
 from pathlib import Path
@@ -19,7 +19,18 @@ TABLES = {
     ),
     'DgocBlueprints/OutGame/InitializeData/DgocInitializeDataDialogContentDataTable': (
         '1535f054164d499831063b8b7a0bd192fcc9fa0cb728a22bbd5a83e0766d9643',
-        {0x409: 'No save. Create one?'},
+        {0x409: 'No save. Create one?',
+         0x500: 'Autosave is on. Keep the game open while the save icon is shown.',
+         0x647: 'Saving...'},
+    ),
+    'DgocBlueprints/OutGame/SlotSelect/Widgets/WI_SaveDataButton': (
+        '93b3bd142e550c4415bca55b0f055db1fe7244bfeeffdaab311a10f4528ffa3c',
+        {0x21d50: 'New Game', 0x22c3b: 'New Game'},
+    ),
+    'DgocBlueprints/OutGame/SlotSelect/Widgets/WI_SlotSelectMenu': (
+        'd3ef7887f944fd175fd64f373f3bcc78c9c127e704aeb740d9950bc8ca09e203',
+        {0x337da: 'Choose a save slot.', 0x33a7e: 'Choose a save slot.',
+         0x34d58: 'New Game', 0x35c43: 'New Game', 0x36b2e: 'New Game'},
     ),
 }
 
