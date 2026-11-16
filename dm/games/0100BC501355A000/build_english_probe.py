@@ -7,6 +7,7 @@ import struct
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from textwrap import wrap
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'gfx' / 'tools'))
 from uepak import Pak
@@ -150,7 +151,7 @@ def replace_blueprint_text(data, offset, text):
             break
     else:
         raise ValueError(f'unterminated Blueprint text at {offset:#x}')
-    write_text(data, offset, end, text)
+    write_text(data, offset, end, "\r\n".join(wrap(text, width=46)))
 
 
 def main():
