@@ -467,6 +467,11 @@ static void test_texture_readback(void) {
     assert(mapped && mapped[0] == 0 && mapped[1] == 0 && memcmp(mapped + 2, words, sizeof words) == 0);
     assert(h_glUnmapBuffer(GL_PIXEL_PACK_BUFFER));
     h_glDeleteBuffers(1, &pbo); assert(!S.pack_buf);
+    const uint16_t r16[] = { 0x1234, 0xfedc };
+    h_glTexImage2D(GL_TEXTURE_2D, 0, GL_R16UI, 2, 1, 0, GL_RED_INTEGER, GL_UNSIGNED_SHORT, r16);
+    uint16_t out16[2] = {0};
+    h_glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_SHORT, out16);
+    assert(h_glGetError() == GL_NO_ERROR && memcmp(out16, r16, sizeof r16) == 0);
     h_glDeleteTextures(2, tex);
 }
 static void test_s3tc_readback(void) {
@@ -523,6 +528,14 @@ static void test_s3tc_readback(void) {
     h_glGetCompressedTexImage(GL_TEXTURE_2D, 0, compressed);
     assert(tex_of(dest)->levels == 1);
     h_glCompressedTexSubImage2D(GL_TEXTURE_2D, 1, 0, 0, 2, 4, GL_COMPRESSED_RGBA_S3TC_DXT5, sizeof blue, blue);
+    h_glGetCompressedTexImage(GL_TEXTURE_2D, 1, compressed);
+    assert(h_glGetError() == GL_NO_ERROR && memcmp(compressed, blue, sizeof blue) == 0);
+    h_glGetCompressedTexImage(GL_TEXTURE_2D, 0, compressed);
+    assert(memcmp(compressed, blocks, sizeof blocks) == 0);
+    h_glDeleteTextures(1, &dest);
+    h_glGenTextures(1, &dest); h_glBindTexture(GL_TEXTURE_2D, dest);
+    h_glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5, 4, 8, 0, sizeof blocks, blocks);
+    h_glCopyImageSubData(texture, GL_TEXTURE_2D, 1, 0, 0, 0, dest, GL_TEXTURE_2D, 1, 0, 0, 0, 2, 4, 1);
     h_glGetCompressedTexImage(GL_TEXTURE_2D, 1, compressed);
     assert(h_glGetError() == GL_NO_ERROR && memcmp(compressed, blue, sizeof blue) == 0);
     h_glGetCompressedTexImage(GL_TEXTURE_2D, 0, compressed);

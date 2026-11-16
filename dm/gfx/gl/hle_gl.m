@@ -95,7 +95,7 @@ enum {
     GL_TEXTURE_MIN_LOD = 0x813a, GL_TEXTURE_MAX_LOD, GL_TEXTURE_BASE_LEVEL,
     GL_TEXTURE_MAX_ANISOTROPY = 0x84fe, GL_MAX_TEXTURE_MAX_ANISOTROPY, GL_TEXTURE_LOD_BIAS = 0x8501, GL_SAMPLER_BINDING = 0x8919,
     GL_INCR_WRAP = 0x8507, GL_DECR_WRAP, GL_TEXTURE_CUBE_MAP = 0x8513, GL_TEXTURE_CUBE_MAP_POSITIVE_X = 0x8515, GL_TEXTURE_CUBE_MAP_NEGATIVE_Z = 0x851a,
-    GL_MAX_VERTEX_ATTRIBS = 0x8869, GL_MAX_TEXTURE_IMAGE_UNITS = 0x8872, GL_RGBA32UI = 0x8d70, GL_RG32UI = 0x823c, GL_RG_INTEGER = 0x8228, GL_RGBA_INTEGER = 0x8d99, GL_RGBA32F = 0x8814, GL_RGB32F, GL_RGBA16F = 0x881a, GL_RGB16F,
+    GL_MAX_VERTEX_ATTRIBS = 0x8869, GL_MAX_TEXTURE_IMAGE_UNITS = 0x8872, GL_R16UI = 0x8234, GL_RED_INTEGER = 0x8d94, GL_RGBA32UI = 0x8d70, GL_RG32UI = 0x823c, GL_RG_INTEGER = 0x8228, GL_RGBA_INTEGER = 0x8d99, GL_RGBA32F = 0x8814, GL_RGB32F, GL_RGBA16F = 0x881a, GL_RGB16F,
     GL_TEXTURE_COMPARE_MODE = 0x884c, GL_TEXTURE_COMPARE_FUNC,
     GL_ARRAY_BUFFER = 0x8892, GL_ELEMENT_ARRAY_BUFFER, GL_DEPTH24_STENCIL8 = 0x88f0, GL_UNIFORM_BUFFER = 0x8a11,
     GL_UNIFORM_BUFFER_BINDING = 0x8a28, GL_MAX_VERTEX_UNIFORM_BLOCKS = 0x8a2b, GL_MAX_FRAGMENT_UNIFORM_BLOCKS = 0x8a2d,
@@ -472,7 +472,7 @@ enum { K_COL, K_DEPTH, K_DS, K_BLOCK };
 typedef struct { MTLPixelFormat pf; uint8_t bytes, bw, bh, kind; MTLTextureSwizzleChannels swz; const char *name; } fmt_t;
 #define SWZ(r, g, b, a) {MTLTextureSwizzle##r, MTLTextureSwizzle##g, MTLTextureSwizzle##b, MTLTextureSwizzle##a}
 #define SW0 SWZ(Red, Green, Blue, Alpha)
-enum { F_RGBA8, F_BGRA8, F_SRGBA8, F_R8, F_RG8, F_L8, F_A8, F_LA8, F_RGBA16F, F_RGBA32F, F_R16F, F_RG16F, F_R32F, F_RG32F, F_RG32UI, F_RGBA32UI, F_RG11B10F, F_RGB10A2, F_RGBA16,
+enum { F_RGBA8, F_BGRA8, F_SRGBA8, F_R8, F_RG8, F_L8, F_A8, F_LA8, F_RGBA16F, F_RGBA32F, F_R16F, F_RG16F, F_R32F, F_RG32F, F_R16UI, F_RG32UI, F_RGBA32UI, F_RG11B10F, F_RGB10A2, F_RGBA16,
        F_D16, F_D32F, F_D32FS8, F_S8, F_BC1_RGB, F_BC1, F_BC2, F_BC3, F_BC1_SRGB, F_BC2_SRGB, F_BC3_SRGB, F_BC4, F_BC4S, F_BC5, F_BC5S, F_BC7, F_BC7_SRGB, F_BC6S, F_BC6U,
        F_ASTC4, F_ASTC4_SRGB, F_N };
 static const fmt_t g_fmt[F_N] = {
@@ -484,6 +484,7 @@ static const fmt_t g_fmt[F_N] = {
     [F_RGBA16F] = {MTLPixelFormatRGBA16Float, 8, 1, 1, K_COL, SW0, "RGBA16F"}, [F_RGBA32F] = {MTLPixelFormatRGBA32Float, 16, 1, 1, K_COL, SW0, "RGBA32F"},
     [F_R16F] = {MTLPixelFormatR16Float, 2, 1, 1, K_COL, SW0, "R16F"}, [F_RG16F] = {MTLPixelFormatRG16Float, 4, 1, 1, K_COL, SW0, "RG16F"},
     [F_R32F] = {MTLPixelFormatR32Float, 4, 1, 1, K_COL, SW0, "R32F"}, [F_RG32F] = {MTLPixelFormatRG32Float, 8, 1, 1, K_COL, SW0, "RG32F"},
+    [F_R16UI] = {MTLPixelFormatR16Uint, 2, 1, 1, K_COL, SW0, "R16UI"},
     [F_RG32UI] = {MTLPixelFormatRG32Uint, 8, 1, 1, K_COL, SW0, "RG32UI"},
     [F_RGBA32UI] = {MTLPixelFormatRGBA32Uint, 16, 1, 1, K_COL, SW0, "RGBA32UI"},
     [F_RG11B10F] = {MTLPixelFormatRG11B10Float, 4, 1, 1, K_COL, SW0, "R11F_G11F_B10F"},
@@ -534,6 +535,7 @@ static int fmt_pick(GLint ifmt, GLenum format, GLenum type, int *cv) {
         case GL_RG16F: return F_RG16F;
         case GL_R32F: return F_R32F;
         case GL_RG32F: return F_RG32F;
+        case GL_R16UI: return F_R16UI;
         case GL_RG32UI: return F_RG32UI;
         case GL_RGBA32UI: return F_RGBA32UI;
         case GL_R11F_G11F_B10F: if (type != 0x8c3b) *cv = CV_NONE; return F_RG11B10F;
@@ -1303,7 +1305,7 @@ static void clear_buffers(GLbitfield mask, unsigned color_slots) {
         if (!count) slots[count++] = -1;
         for (int j = 0; j < count; j++) {
             int slot = slots[j];
-            int integer = slot >= 0 && (P.cpf[slot] == MTLPixelFormatRG32Uint || P.cpf[slot] == MTLPixelFormatRGBA32Uint);
+            int integer = slot >= 0 && (P.cpf[slot] == MTLPixelFormatR16Uint || P.cpf[slot] == MTLPixelFormatRG32Uint || P.cpf[slot] == MTLPixelFormatRGBA32Uint);
             typedef struct { MTLPixelFormat color[GL_DRAW_SLOTS], depth, stencil; int slot, mask; } clear_key;
             static __strong id<MTLRenderPipelineState> cache[32]; static clear_key keys[32]; static int nc;
             clear_key key = {0}; memcpy(key.color, P.cpf, sizeof key.color);
@@ -1812,7 +1814,7 @@ GL(glTexBuffer, void, GLenum target, GLenum format, GLuint buffer) {
     MTLPixelFormat pf;
     unsigned bpp;
     switch (format) {
-        case 0x8234: pf = MTLPixelFormatR16Uint; bpp = 2; break; // GL_R16UI
+        case GL_R16UI: pf = MTLPixelFormatR16Uint; bpp = 2; break;
         case 0x8236: pf = MTLPixelFormatR32Uint; bpp = 4; break; // GL_R32UI
         case GL_R32F: pf = MTLPixelFormatR32Float; bpp = 4; break;
         case 0x8d7c: pf = MTLPixelFormatRGBA8Uint; bpp = 4; break; // GL_RGBA8UI
@@ -1930,6 +1932,10 @@ static int compressed_expand_mips(tex_t *t) {
     t->gen++; t->use = g_serial;
     return 1;
 }
+static int compressed_level_for_write(tex_t *texture, GLint level) {
+    if (level < texture->levels) return 1;
+    return !texture->slevels && (umax(texture->w, texture->h) >> level) && compressed_expand_mips(texture);
+}
 static void compressed_subimage(const teximg_args *a, tex_t *t, int face) {
     const char *fn = "glCompressedTexSubImage2D";
     if (a->level < 0 || a->level >= MAXLV || a->x < 0 || a->y < 0 || a->w < 0 || a->h < 0 || a->size < 0) {
@@ -1961,7 +1967,7 @@ static void compressed_subimage(const teximg_args *a, tex_t *t, int face) {
     }
     if (!data) { RED1("compressed region upload of %d bytes has no data", a->size); gl_error_at(GL_INVALID_OPERATION, fn); return; }
     if ((!t->made && !tex_make(t, 0)) || !t->tex ||
-        (a->level >= t->levels && (t->slevels || !(umax(t->w, t->h) >> a->level) || !compressed_expand_mips(t)))) {
+        !compressed_level_for_write(t, a->level)) {
         gl_error_at(GL_INVALID_OPERATION, fn); return;
     }
     tex_write(t, face, a->level, a->x, a->y, 0, a->w, a->h, data, pitch);
@@ -2243,8 +2249,12 @@ static void copy_image_impl(const image_copy_args *a) {
     const fmt_t *formats[] = {sf, df};
     for (int i = 0; i < 2; i++) {
         const image_copy_end *e = ends[i]; const fmt_t *f = formats[i];
-        if (e->level < 0 || e->level >= objects[i]->levels || e->x < 0 || e->y < 0 || e->z ||
-            e->x % f->bw || e->y % f->bh) { gl_error(GL_INVALID_VALUE); return; }
+        if (e->level < 0 || e->level >= MAXLV || e->x < 0 || e->y < 0 || e->z ||
+            e->x % f->bw || e->y % f->bh ||
+            (e->level >= objects[i]->levels && (!i || f->kind != K_BLOCK || objects[i]->slevels ||
+                !(umax(objects[i]->w, objects[i]->h) >> e->level)))) {
+            gl_error(GL_INVALID_VALUE); return;
+        }
         size_t w = umax(1, objects[i]->w >> e->level), h = umax(1, objects[i]->h >> e->level);
         if ((size_t)e->x >= w || (size_t)e->y >= h ||
             blocks_w > (w - e->x + f->bw - 1) / f->bw || blocks_h > (h - e->y + f->bh - 1) / f->bh) {
@@ -2255,6 +2265,9 @@ static void copy_image_impl(const image_copy_args *a) {
         if ((!i && (sz[i][0] != (size_t)a->width || sz[i][1] != (size_t)a->height)) ||
             (sz[i][0] % f->bw && e->x + sz[i][0] != w) ||
             (sz[i][1] % f->bh && e->y + sz[i][1] != h)) { gl_error(GL_INVALID_VALUE); return; }
+    }
+    if (a->dst.level >= dst->levels && !compressed_level_for_write(dst, a->dst.level)) {
+        gl_error(GL_INVALID_OPERATION); return;
     }
     if (g_pend_clear.bits) clears_flush();
     pass_end();
@@ -2365,7 +2378,8 @@ static void read_texture(id<MTLTexture> src, int level, int slice, MTLRegion reg
         if (format == GL_RGBA && (pf == MTLPixelFormatRGBA8Unorm || pf == MTLPixelFormatRGBA8Unorm_sRGB || bgra || s3tc)) bytes = 4;
         else if (format == GL_RED && pf == MTLPixelFormatR8Unorm) bytes = 1;
         else if (format == GL_RG && pf == MTLPixelFormatRG8Unorm) bytes = 2;
-    } else if (type == GL_UNSIGNED_INT) {
+    } else if (type == GL_UNSIGNED_SHORT && format == GL_RED_INTEGER && pf == MTLPixelFormatR16Uint) bytes = 2;
+    else if (type == GL_UNSIGNED_INT) {
         if (format == GL_RG_INTEGER && pf == MTLPixelFormatRG32Uint) bytes = 8;
         else if (format == GL_RGBA_INTEGER && pf == MTLPixelFormatRGBA32Uint) bytes = 16;
     }

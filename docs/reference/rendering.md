@@ -2088,8 +2088,8 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 
 - **Symptom:** Factorio reports invalid compressed sprite uploads, then exits while attaching the backing buffer for a shader lookup.
 - **Cause:** Compressed sprite uploads target mip 1 after the mutable texture's first use allocated only mip 0. The lookup then calls unresolved `glTexBuffer` at `main+0x94d434`. Older offline shader catalogs describe these lookup uniforms as 2D-emulated texel buffers.
-- **Fix:** Grow mutable compressed storage for a later mip while preserving existing blocks. Resolve pixel unpack buffer offsets for compressed uploads. Bind shared Metal buffer views for texture buffers and rebuild offline shader catalogs with the pinned translator's native texture buffer option. [Metal feature set tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)
-- **Found on:** Factorio 2.0.42, main build `244c3195a745d4a2f0499f2d5e7a318f`. Mac regressions draw from a native texture buffer and verify replacement buffer data, compressed block offsets, and late mip storage. The rebuilt catalogs compile 94 shaders per platform. Check gameplay separately on Duo.
+- **Fix:** Grow mutable compressed storage for a later subimage upload or image-copy destination while preserving existing blocks. Map the unsigned R16 lookup textures made after sprite loading. Resolve pixel unpack buffer offsets for compressed uploads. Bind shared Metal buffer views for texture buffers and rebuild offline shader catalogs with the pinned translator's native texture buffer option. [Metal feature set tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)
+- **Found on:** Factorio 2.0.42, main build `244c3195a745d4a2f0499f2d5e7a318f`. Mac regressions draw from a native texture buffer and verify replacement buffer data, compressed block offsets, late mip upload and copy storage, and exact R16UI data. The rebuilt catalogs compile 94 shaders per platform. Check gameplay separately on Duo.
 
 ### GL textures, swizzles and uploads
 
