@@ -299,6 +299,50 @@ static void test_sampler_objects(void) {
     assert(!h_glIsSampler(names[0]) && !S.units[0].sampler && !S.units[3].sampler);
     h_glActiveTexture(GL_TEXTURE0);
 }
+static void test_integer_instanced_vertex_fetch(void) {
+    assert(import("glVertexAttribIPointer") == (void *)h_glVertexAttribIPointer);
+    assert(import("glDrawArraysInstancedBaseInstance") == (void *)h_glDrawArraysInstancedBaseInstance_bs);
+    GLuint vao, buffer, fb, tex;
+    h_glGenVertexArrays(1, &vao); h_glBindVertexArray(vao);
+    h_glGenBuffers(1, &buffer); h_glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    const uint16_t vertex[] = { 0, 0, 32768, 65535, 32768, 65535, 32768, 65535, 123, 65535 };
+    h_glBufferData(GL_ARRAY_BUFFER, sizeof vertex, vertex, 0);
+    h_glVertexAttribIPointer(0, 2, GL_UNSIGNED_SHORT, 0, (const void *)4);
+    h_glEnableVertexAttribArray(0);
+    assert(fetch(0).off == 4 && fetch(0).stride == 4 && !attr(0)->norm);
+
+    static NSString *const source = @"#include <metal_stdlib>\nusing namespace metal;\n"
+        @"struct I {ushort2 n [[attribute(0)]];}; struct O {float4 p [[position]]; float4 c;};\n"
+        @"vertex O v(I in [[stage_in]], uint i [[vertex_id]], uint instance [[instance_id]]) {"
+        @" const float2 points[]={{-1,-1},{3,-1},{-1,3}}; return {float4(points[i],0,1), float4(in.n.x == 32768, in.n.y == 65535, in.n.x == 123 && instance == 0, 1)}; }\n"
+        @"fragment float4 f(O in [[stage_in]]) { return in.c; }";
+    id<MTLLibrary> lib = [g_dev newLibraryWithSource:source options:nil error:nil]; assert(lib);
+    static shattr input = {.name = "n", .slot = 0};
+    static shinfo stages[] = {{.na = 1, .a = &input}, {0}};
+    GLuint name = h_glCreateProgram();
+    prog_t *program = prog_of(name);
+    program->si[0] = &stages[0]; program->si[1] = &stages[1]; program->linked = 1;
+    program->fn[0] = [lib newFunctionWithName:@"v"]; program->fn[1] = [lib newFunctionWithName:@"f"];
+    h_glUseProgram(name);
+
+    h_glGenFramebuffers(1, &fb); h_glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    h_glGenTextures(1, &tex); h_glBindTexture(GL_TEXTURE_2D, tex);
+    h_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    h_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    h_glViewport(0, 0, 1, 1);
+    h_glDrawArrays(GL_TRIANGLES, 0, 3);
+    uint8_t px[4];
+    h_glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    assert(px[0] == 255 && px[1] == 255 && px[2] == 0 && px[3] == 255);
+    h_glVertexAttribDivisor(0, 2);
+    h_glDrawArraysInstancedBaseInstance(GL_TRIANGLES, 0, 3, 1, 3);
+    h_glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    assert(px[0] == 0 && px[1] == 255 && px[2] == 255 && px[3] == 255);
+
+    h_glBindFramebuffer(GL_FRAMEBUFFER, 0); h_glDeleteFramebuffers(1, &fb); h_glDeleteTextures(1, &tex);
+    h_glUseProgram(0); h_glDeleteProgram(name);
+    h_glBindVertexArray(0); h_glDeleteVertexArrays(1, &vao); h_glDeleteBuffers(1, &buffer);
+}
 static void test_multiple_color_attachments(void) {
     assert(import("glColorMaski") == (void *)h_glColorMaski);
     GLuint fb, tex[2];
@@ -481,6 +525,7 @@ int main(int argc, char **argv) {
     test_named_uniform_blocks();
     test_sampler_objects();
     test_multiple_color_attachments();
+    test_integer_instanced_vertex_fetch();
     test_timer_queries();
 
     unsigned long sz;
@@ -500,6 +545,6 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }

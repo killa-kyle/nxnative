@@ -2049,6 +2049,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** Map framebuffer attachments through the configured draw slots into the Metal pass and pipeline. Track colour masks and clears independently by draw slot and use the selected read attachment for pixel reads.
 - **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac test draws through two swapped targets, reads each target, then clears a single channel on one target. Post-fix Duo gameplay remains unverified.
 
+### Integer vertex arrays and instanced draw offsets
+
+- **Symptom:** After the multiple colour targets initialize, Factorio exits setting up the integer inputs for a draw.
+- **Cause:** `glVertexAttribIPointer` resolves to null at `main+0x94943c`. The same draw path calls `glDrawArraysInstancedBaseInstance` at `main+0x949928`, which was also missing.
+- **Fix:** Route integer attributes through the existing vertex-array binding and unnormalized Metal integer formats. Apply the base instance to the vertex data offsets of instanced attributes so the shader still sees a zero-based `gl_InstanceID`. [Khronos OpenGL reference](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glDrawArraysInstancedBaseInstance.xhtml)
+- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac regression reads back pixels that depend on exact 16-bit integer values, an instance offset with divisor 2, and the shader-visible instance ID. Post-fix Duo gameplay remains unverified.
+
 ### GL textures, swizzles and uploads
 
 - Textures are made on first use from the levels given so far (Digimon's loader defines them level by level). An upload into a texture a pending command buffer may still read is a blit in command order; any other is a CPU write. Metal reads a channel a format lacks as 0 (alpha 1) as GL does, so only luminance / alpha formats get a swizzle: Metal refuses a swizzle on a texture that can be a render target (`Texture swizzling is not compatable with MTLTextureUsageRenderTarget`, Digimon's first story scene).

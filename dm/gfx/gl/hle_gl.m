@@ -1020,6 +1020,7 @@ static void bind_uniforms_textures(prog_t *p) {
     }
     E.prog = p->serial;
 }
+static GLuint g_dl_base_instance;
 static int g_dl_mode, g_dl_n, g_dl_inst, g_dl_elems;   // the draw call being set up, for the DM_GL_DRAWLOG line
 // The vertex range a draw touches, which a client-memory array is copied by: draw_arrays' first..first+count, or the range of draw_elements' indices (plus its base vertex),
 // scanned only when a draw has such an array (draw_span), since the indices of a draw from vertex buffers are never read on the CPU
@@ -1037,6 +1038,10 @@ static void draw_span(void) {
 }
 // Everything a draw needs; 0 = skip it
 static id<MTLTexture> fb_color(GLuint fb, int read, int *level, int *slice);
+// Bias the input stream by baseInstance while leaving GLSL's gl_InstanceID zero-based.
+static uint64_t vertex_offset(const vattr_t *attribute, const vbind_t *binding) {
+    return binding->off + attribute->rel + (binding->div ? (uint64_t)g_dl_base_instance * binding->stride : 0);
+}
 static int draw_setup(void) {
     prog_t *p = prog_of(S.prog);
     if (!p || !p->linked) { g_sk_prog++; RED1("draw with no usable program (%u)", S.prog); return 0; }
@@ -1050,7 +1055,16 @@ static int draw_setup(void) {
         vkey_set(&k, s, a, vb);
         if (!k.vf[s] || (k.stride[s] & 3)) { RED1("vertex attribute %d: type %#x size %d stride %d not mapped", p->amap[s], a->type, a->size, vb->stride); return 0; }
         buf_t *b = buf_of(vb->buf);
-        if (b && b->mb) continue;   // a vertex buffer: bound as it is
+        if (b && b->mb) {
+            if (vb->div && g_dl_base_instance) {
+                uint64_t offset = vertex_offset(a, vb);
+                uint64_t fetch = (uint64_t)(g_dl_inst - 1) / vb->div * vb->stride + a->size * vtype_bytes(a->type);
+                if (offset > b->size || fetch > b->size - offset) {
+                    g_sk_attr++; RED1("instanced attribute %d reads past its vertex buffer", p->amap[s]); return 0;
+                }
+            }
+            continue;
+        }
         if (vb->buf) { g_sk_attr++; RED1("vertex attribute %d reads a buffer with no data (%u)", p->amap[s], vb->buf); return 0; }
         if (!vb->client) { g_sk_attr++; RED1("vertex attribute %d reads a binding with no buffer", p->amap[s]); return 0; }   // GL leaves such a read undefined
         // Client memory: GL lets the game keep the vertices in its own array, Metal needs a buffer, so copy the span this draw touches into a
@@ -1063,7 +1077,7 @@ static int draw_setup(void) {
             size_t len = lo < 0 ? 0 : (size_t)lo * stride + (size_t)(hi - lo - 1) * stride + esz;
             if (!esz || lo < 0 || len > (128u << 20)) { g_sk_attr++; RED1("vertex attribute %d: client array vertices %lld..%lld (%zu bytes) out of range", p->amap[s], (long long)lo, (long long)hi, len); return 0; }
             size_t off; id<MTLBuffer> mb = arena_alloc(len, &off);
-            memcpy((uint8_t *)mb.contents + off + (size_t)lo * stride, (const uint8_t *)(uintptr_t)(vb->off + a->rel) + (size_t)lo * stride, len - (size_t)lo * stride);
+            memcpy((uint8_t *)mb.contents + off + (size_t)lo * stride, (const uint8_t *)(uintptr_t)vertex_offset(a, vb) + (size_t)lo * stride, len - (size_t)lo * stride);
             cbuf[s] = mb; coff[s] = off;   // bound below
         }
     }
@@ -1081,7 +1095,7 @@ static int draw_setup(void) {
     for (int i = 0; i < vs->na; i++) {
         int s = vs->a[i].slot, gi = p->amap[s]; vattr_t *a = &v->a[gi];
         if (a->on && cbuf[s]) [e setVertexBuffer:cbuf[s] offset:coff[s] atIndex:30 - s];
-        else if (a->on) { const vbind_t *vb = vb_of(v, gi); buf_t *b = buf_of(vb->buf); b->use = g_serial; [e setVertexBuffer:b->mb offset:vb->off + a->rel atIndex:30 - s]; }
+        else if (a->on) { const vbind_t *vb = vb_of(v, gi); buf_t *b = buf_of(vb->buf); b->use = g_serial; [e setVertexBuffer:b->mb offset:vertex_offset(a, vb) atIndex:30 - s]; }
         else [e setVertexBytes:S.va[gi] length:16 atIndex:30 - s];
     }
     if (!bind_uniform_blocks(p, e)) { g_sk_prog++; return 0; }
@@ -1142,9 +1156,9 @@ static uint32_t idx_convert(int conv, const uint32_t *in, uint32_t n, uint32_t b
 #undef IX
     return m;
 }
-static void draw_arrays(GLenum mode, GLint first, GLsizei count, GLsizei inst) {
+static void draw_arrays(GLenum mode, GLint first, GLsizei count, GLsizei inst, GLuint base_instance) {
     if (count <= 0 || inst <= 0) return;
-    g_dl_mode = mode; g_dl_n = count; g_dl_inst = inst; g_dl_elems = 0; g_dl_first = first; g_dl_vend = (int64_t)first + count; g_dl_idx = NULL;
+    g_dl_mode = mode; g_dl_n = count; g_dl_inst = inst; g_dl_elems = 0; g_dl_base_instance = base_instance; g_dl_first = first; g_dl_vend = (int64_t)first + count; g_dl_idx = NULL;
     @autoreleasepool {
         int conv; MTLPrimitiveType pt = prim_of(mode, &conv);
         if (conv < 0 || !draw_setup()) return;
@@ -1164,7 +1178,7 @@ static void draw_elements(GLenum mode, GLsizei count, GLenum type, const void *i
         uintptr_t io = (uintptr_t)indices; int isz = type == GL_UNSIGNED_INT ? 4 : type == GL_UNSIGNED_SHORT ? 2 : 1;
         const uint8_t *src = eb ? (eb->mb ? (const uint8_t *)eb->mb.contents + io : NULL) : (const uint8_t *)indices;
         if (!src || (eb && io + (size_t)count * isz > eb->size)) { RED1("glDrawElements: indices outside their buffer"); return; }
-        g_dl_mode = mode; g_dl_n = count; g_dl_inst = inst; g_dl_elems = 1; g_dl_first = base; g_dl_idx = src; g_dl_isz = isz; g_dl_spanned = 0;   // draw_span reads them
+        g_dl_mode = mode; g_dl_n = count; g_dl_inst = inst; g_dl_elems = 1; g_dl_base_instance = 0; g_dl_first = base; g_dl_idx = src; g_dl_isz = isz; g_dl_spanned = 0;   // draw_span reads them
         if (!draw_setup()) return;
         if (!conv && isz > 1 && eb && io % 4 == 0) {   // the game's own index buffer
             eb->use = g_serial;
@@ -1181,8 +1195,12 @@ static void draw_elements(GLenum mode, GLsizei count, GLenum type, const void *i
         if (n) [g_enc drawIndexedPrimitives:pt indexCount:n indexType:MTLIndexTypeUInt32 indexBuffer:b indexBufferOffset:off instanceCount:inst baseVertex:base baseInstance:0];
     }
 }
-GLB(glDrawArrays, void, GLenum mode, GLint first, GLsizei count) { draw_arrays(mode, first, count, 1); }
-GLB(glDrawArraysInstanced, void, GLenum mode, GLint first, GLsizei count, GLsizei inst) { draw_arrays(mode, first, count, inst); }
+GLB(glDrawArrays, void, GLenum mode, GLint first, GLsizei count) { draw_arrays(mode, first, count, 1, 0); }
+GLB(glDrawArraysInstanced, void, GLenum mode, GLint first, GLsizei count, GLsizei inst) { draw_arrays(mode, first, count, inst, 0); }
+GLB(glDrawArraysInstancedBaseInstance, void, GLenum mode, GLint first, GLsizei count, GLsizei inst, GLuint base_instance) {
+    if (count < 0 || inst < 0) { gl_error(GL_INVALID_VALUE); return; }
+    draw_arrays(mode, first, count, inst, base_instance);
+}
 GLB(glDrawElements, void, GLenum mode, GLsizei count, GLenum type, const void *indices) { draw_elements(mode, count, type, indices, 0, 1); }
 GLB(glDrawElementsBaseVertex, void, GLenum mode, GLsizei count, GLenum type, const void *indices, GLint base) { draw_elements(mode, count, type, indices, base, 1); }
 GLB(glDrawElementsInstanced, void, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei inst) { draw_elements(mode, count, type, indices, 0, inst); }
@@ -1641,12 +1659,25 @@ GL(glDisableVertexAttribArray, void, GLuint i) { if (i < 16) cur_vao()->a[i].on 
 GL(glEnableVertexArrayAttrib, void, GLuint vao, GLuint i) { vao_t *v = vao && vao < g_nvaos && g_vaos[vao] ? g_vaos[vao] : &g_vao0; if (i < 16) v->a[i].on = 1; }
 static void va_format(vattr_t *a, GLint size, GLenum type, uint32_t norm, GLuint rel) { a->size = size == 0x80e1 ? 4 : (uint8_t)size; a->type = type; a->norm = (norm & 0xff) != 0; a->rel = rel; }
 static uint8_t va_div(GLuint d) { return d > 255 ? 255 : (uint8_t)d; }
-GL(glVertexAttribPointer, void, GLuint i, GLint size, GLenum type, uint32_t norm, GLsizei stride, const void *ptr) {
+static void va_pointer(GLuint i, GLint size, GLenum type, uint32_t norm, GLsizei stride, const void *ptr) {
     if (i >= 16 || stride < 0) { gl_error(GL_INVALID_VALUE); return; }   // GL_MAX_VERTEX_ATTRIBS
     vao_t *v = cur_vao(); vattr_t *a = &v->a[i]; vbind_t *b = &v->b[i];
     va_format(a, size, type, norm, 0); a->bind = 0;
     // Stride 0 is tightly packed: GL makes it the format's size here, on the binding (its effective stride), so another attribute on it keeps it
     b->buf = S.array_buf; b->client = !S.array_buf; b->off = (uintptr_t)ptr; b->stride = stride ? stride : a->size * vtype_bytes(type);
+}
+GL(glVertexAttribPointer, void, GLuint i, GLint size, GLenum type, uint32_t norm, GLsizei stride, const void *ptr) {
+    va_pointer(i, size, type, norm, stride, ptr);
+}
+GL(glVertexAttribIPointer, void, GLuint i, GLint size, GLenum type, GLsizei stride, const void *ptr) {
+    if (size < 1 || size > 4) { gl_error(GL_INVALID_VALUE); return; }
+    switch (type) {
+        case GL_BYTE: case GL_UNSIGNED_BYTE: case GL_SHORT: case GL_UNSIGNED_SHORT: case GL_INT: case GL_UNSIGNED_INT:
+            va_pointer(i, size, type, 0, stride, ptr);
+            break;
+        default:
+            gl_error(GL_INVALID_ENUM);
+    }
 }
 GL(glVertexAttribDivisor, void, GLuint i, GLuint d) {
     if (i >= 16) { gl_error(GL_INVALID_VALUE); return; }
