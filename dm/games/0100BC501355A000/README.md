@@ -17,3 +17,15 @@ The uncapped Mac probe observed a 62 GiB engine reservation returning to `main+0
 - A scan of chunk 1 found 3,598 candidate length-prefixed UTF-16 Japanese strings across 173 cooked Blueprint and data table export files. These are candidate occurrences, including duplicates and possible internal text. A patch needs to preserve Unreal export sizes and offsets, or use the runtime text loader once the text serialization path is confirmed.
 - The game has cooked UI widgets and menu artwork, including a Yamanote tutorial selection card. Inventory the cooked text fields and the textures backing those screens before choosing how to replace them. CRIWARE audio and USM video are separate assets and need their own coverage check for spoken prompts and embedded captions.
 - Verify title and main menus, settings, tutorials, mission selection, and one route through its results screen before marking an English build playable. Keep the translation tied to the tested game version and keep game assets in the local work folder.
+
+A local proof of concept replaces five fixed-width UTF-16 fields in two cooked
+exports. The Mac host opens the version 8 patch pak through
+`DM_ROMFS_OVERLAY`, and the new-save prompt rendered its English sentence.
+The confirmation button and control hints on the same screen still need
+translation. The four other menu strings and iOS overlay delivery are pending
+visual validation.
+
+Run `build_english_probe.py <RomFS.img> <overlay directory> --repak <repak>`
+with repak 0.2.3. The script checks each original export’s fingerprint and
+writes a separate pak. Use the overlay directory as `DM_ROMFS_OVERLAY` in the
+Mac host test. Keep the rebuilt pak and its source assets outside Git.
