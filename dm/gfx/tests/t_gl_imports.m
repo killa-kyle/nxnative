@@ -244,6 +244,61 @@ static void test_named_uniform_blocks(void) {
     assert(!S.ubo[3].buf && !bind_uniform_blocks(p, nil));
     h_glDeleteProgram(pr);
 }
+static void test_sampler_objects(void) {
+    GLuint names[2];
+    assert(import("glGenSamplers") == (void *)h_glGenSamplers);
+    h_glGenSamplers(2, names); assert(names[0] && names[1] != names[0] && h_glIsSampler(names[1]));
+    h_glSamplerParameteri(names[0], GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    h_glSamplerParameteri(names[0], GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    h_glSamplerParameterf(names[0], GL_TEXTURE_MAX_LOD, 2.5f);
+    const GLfloat border[4] = {1, 1, 1, 1};
+    h_glSamplerParameterfv(names[0], GL_TEXTURE_BORDER_COLOR, border);
+    assert(sampler_of(names[0])->max_lod == 2.5f && sampler_of(names[0])->border[3] == 1);
+    assert(sampler_of(names[1])->max_lod == sample_defaults.max_lod);
+    h_glBindSampler(0, names[0]); h_glBindSampler(3, names[0]);
+    h_glActiveTexture(GL_TEXTURE0 + 3);
+    GLint binding;
+    h_glGetIntegerv(GL_SAMPLER_BINDING, &binding); assert(binding == (GLint)names[0]);
+
+    // A named sampler changes what is drawn while leaving the texture's own settings intact.
+    tex_t texture = {0}; tex_init_params(&texture, GL_TEXTURE_2D); texture.levels = 1;
+    texture.sample.minf = texture.sample.magf = GL_NEAREST;
+    id<MTLSamplerState> nearest = tex_sampler(&texture, NULL), linear = tex_sampler(&texture, sampler_of(S.units[3].sampler));
+    assert(nearest && linear && nearest != linear && tex_sampler(&texture, NULL) == nearest);
+    static NSString *const source = @"#include <metal_stdlib>\nusing namespace metal;\n"
+        @"vertex float4 v(uint i [[vertex_id]]) {const float2 points[]={{-1,-1},{3,-1},{-1,3}}; return float4(points[i],0,1);}\n"
+        @"fragment float4 f(texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) { return t.sample(s, float2(0.375f,0.5f)); }";
+    id<MTLLibrary> lib = [g_dev newLibraryWithSource:source options:nil error:nil]; assert(lib);
+    MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+    pd.vertexFunction = [lib newFunctionWithName:@"v"]; pd.fragmentFunction = [lib newFunctionWithName:@"f"];
+    pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+    id<MTLRenderPipelineState> pipeline = [g_dev newRenderPipelineStateWithDescriptor:pd error:nil]; assert(pipeline);
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:2 height:1 mipmapped:NO];
+    td.usage = MTLTextureUsageShaderRead; td.storageMode = MTLStorageModeShared;
+    id<MTLTexture> input = [g_dev newTextureWithDescriptor:td];
+    const uint8_t colors[] = {255, 0, 0, 255, 0, 0, 255, 255};
+    [input replaceRegion:MTLRegionMake2D(0, 0, 2, 1) mipmapLevel:0 withBytes:colors bytesPerRow:8];
+    td.width = 1; td.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> output = [g_dev newTextureWithDescriptor:td];
+    for (int enabled = 0; enabled < 2; enabled++) {
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = output; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLCommandBuffer> cb = [g_q commandBuffer];
+        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+        [enc setRenderPipelineState:pipeline];
+        [enc setFragmentTexture:input atIndex:0]; [enc setFragmentSamplerState:enabled ? linear : nearest atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [enc endEncoding]; [cb commit]; [cb waitUntilCompleted];
+        assert(cb.status == MTLCommandBufferStatusCompleted);
+        uint8_t px[4]; [output getBytes:px bytesPerRow:4 fromRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0];
+        assert(px[1] == 0 && px[3] == 255);
+        if (!enabled) { assert(px[0] == 255 && px[2] == 0); }
+        else { assert(px[0] >= 190 && px[0] <= 192 && px[2] >= 63 && px[2] <= 65); }
+    }
+    h_glDeleteSamplers(2, names);
+    assert(!h_glIsSampler(names[0]) && !S.units[0].sampler && !S.units[3].sampler);
+    h_glActiveTexture(GL_TEXTURE0);
+}
 static void test_timer_queries(void) {
     GLuint names[3];
     assert(import("glGenQueries") == (void *)h_glGenQueries);
@@ -373,6 +428,7 @@ int main(int argc, char **argv) {
     test_literal_stride_fetch();
     test_uniform_buffer();
     test_named_uniform_blocks();
+    test_sampler_objects();
     test_timer_queries();
 
     unsigned long sz;
@@ -392,6 +448,6 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block draws, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }
