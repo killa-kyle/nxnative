@@ -2059,9 +2059,9 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 ### Packed OpenGL atlas copies
 
 - **Symptom:** Factorio loads its initial atlases and exits while loading 3D bitmaps. The log shows that `RGBA32UI` and `RG32UI` textures could not be made.
-- **Cause:** The 2D atlas path calls an unresolved `glCopyImageSubData` at `main+0x94ad98`. The OpenGL layer also lacked the unsigned integer texture formats and the `usampler2D` reflection type used by the atlas shaders.
-- **Fix:** Allocate the unsigned integer formats and bind integer 2D samplers. Use a Metal blit for 2D images with matching formats and byte-preserving texture-to-buffer blits when each integer texel represents a compressed block. [Khronos OpenGL reference](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glCopyImageSubData.xhtml)
-- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac regression copies packed data through a BC1 texture and verifies its bytes after readback. Post-fix Duo gameplay remains unverified.
+- **Cause:** The 2D atlas path calls an unresolved `glCopyImageSubData` at `main+0x94ad98`. The shipped loader branches past the lookup at `main+0x1c53570` unless `GL_ARB_copy_image` is present. Unsigned integer textures were also missing, and the masked clear used a float fragment result on an integer attachment.
+- **Fix:** Expose the copy entry through the extension queries and use Metal blits for matching-format 2D copies and packed-block copies. Allocate and bind unsigned integer textures and select the shared Metal clear shader with an unsigned output for masked clears on those targets. [Khronos OpenGL reference](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glCopyImageSubData.xhtml)
+- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac regressions verify extension discovery, a byte-exact BC1 round trip, and a clear that changes only the selected channels and region of an integer attachment. Post-fix Duo gameplay remains unverified.
 
 ### GL textures, swizzles and uploads
 

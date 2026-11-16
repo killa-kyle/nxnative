@@ -394,8 +394,33 @@ static void test_multiple_color_attachments(void) {
     h_glUseProgram(0); h_glDeleteProgram(name);
     h_glBindFramebuffer(GL_FRAMEBUFFER, 0); h_glDeleteFramebuffers(1, &fb); h_glDeleteTextures(2, tex);
 }
+static void test_integer_color_clear(void) {
+    GLuint fb, texture;
+    h_glGenFramebuffers(1, &fb); h_glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    h_glGenTextures(1, &texture); h_glBindTexture(GL_TEXTURE_2D, texture);
+    const uint32_t prior[] = { 100, 101, 102, 103, 200, 201, 202, 203 };
+    h_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32UI, 2, 1, 0, 0x8d99, GL_UNSIGNED_INT, prior);
+    h_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+    h_glColorMask(1, 0, 1, 0);
+    h_glEnable(GL_SCISSOR_TEST); h_glScissor(1, 0, 1, 1);
+    h_glClearColor(0, 1, 42, 1); h_glClear(GL_COLOR_BUFFER_BIT);
+    id<MTLCommandBuffer> cb = cb_get(); cb_commit(); [cb waitUntilCompleted];
+    assert(cb.status == MTLCommandBufferStatusCompleted);
+    uint32_t values[8];
+    [tex_of(texture)->tex getBytes:values bytesPerRow:sizeof values fromRegion:MTLRegionMake2D(0, 0, 2, 1) mipmapLevel:0];
+    assert(memcmp(values, prior, 4 * sizeof values[0]) == 0);
+    assert(values[4] == 0 && values[5] == 201 && values[6] == 42 && values[7] == 203);
+    h_glDisable(GL_SCISSOR_TEST); h_glColorMask(1, 1, 1, 1);
+    h_glBindFramebuffer(GL_FRAMEBUFFER, 0); h_glDeleteFramebuffers(1, &fb); h_glDeleteTextures(1, &texture);
+}
 static void test_packed_image_copy(void) {
     assert(import("glCopyImageSubData") == (void *)h_glCopyImageSubData);
+    assert(h_eglGetProcAddress("glCopyImageSubData") == (void *)h_glCopyImageSubData);
+    assert(strstr(h_glGetString(GL_EXTENSIONS), "GL_ARB_copy_image "));
+    GLint extensions; h_glGetIntegerv(GL_NUM_EXTENSIONS, &extensions);
+    int found = 0;
+    for (GLint i = 0; i < extensions; i++) found |= strcmp(h_glGetStringi(GL_EXTENSIONS, i), "GL_ARB_copy_image") == 0;
+    assert(found);
     if (!g_dev.supportsBCTextureCompression) return;
     assert(tcode("usampler2D") == T_USAMP2D && is_samp(T_USAMP2D));
     assert(g_tenums[T_USAMP2D] == GL_UNSIGNED_INT_SAMPLER_2D && g_utex0.pixelFormat == MTLPixelFormatRGBA32Uint);
@@ -548,6 +573,7 @@ int main(int argc, char **argv) {
     test_sampler_objects();
     test_multiple_color_attachments();
     test_integer_instanced_vertex_fetch();
+    test_integer_color_clear();
     test_packed_image_copy();
     test_timer_queries();
 
@@ -568,6 +594,6 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, packed texture copies, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, integer clears, packed texture copies, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }

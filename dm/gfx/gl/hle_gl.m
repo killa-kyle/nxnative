@@ -144,7 +144,7 @@ static id<MTLCommandQueue> g_q;
 static id<MTLSharedEvent> g_ev;                  // signalled with a command buffer's serial at its end
 static id<MTLTexture> g_tex0, g_utex0, g_cube0, g_tex3d0, g_arr0;   // bound where a sampler's unit has no texture (or an unusable one): opaque black, as GL samples an incomplete texture
 static id<MTLSamplerState> g_samp0;
-static id<MTLLibrary> g_lib, g_util;             // the game's shaders; the layer's own (clears)
+static id<MTLLibrary> g_lib, g_clear;             // the game's shaders; the layer's own (clears)
 static uint64_t g_serial = 1;                    // serial of the command buffer being recorded (g_cb); committed ones have lower serials
 static _Atomic uint64_t g_done;                  // highest serial whose command buffer has completed
 static id<MTLCommandBuffer> g_cb;
@@ -236,8 +236,8 @@ static void dev_init_once(void) {
         [g_arr0 replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 slice:0 withBytes:&black bytesPerRow:4 bytesPerImage:0];
         g_samp0 = [g_dev newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
         NSError *err = nil;
-        g_util = host_msl_lib(g_dev, nil, "gl_util", &err);   // dm/gfx/msl/gl_util.metal: a quad that clears what a scissored or masked glClear covers (a render pass can only clear its attachments whole)
-        if (!g_util) GLOG("[RED] the layer's own shaders do not compile: %s", err.localizedDescription.UTF8String);
+        g_clear = host_msl_lib(g_dev, nil, "clear", &err);   // shared fragment outputs for normalized, float and integer attachments
+        if (!g_clear) GLOG("[RED] the layer's own shaders do not compile: %s", err.localizedDescription.UTF8String);
         sh_load();
         mtl_set_origin_lower_left(1);   // the window image is stored bottom row first; the present flips it
         GLOG("Metal device %s; %d shader table entries", g_dev.name.UTF8String, g_nsh);
@@ -1250,16 +1250,17 @@ static void clear_buffers(GLbitfield mask, unsigned color_slots) {
         if (!count) slots[count++] = -1;
         for (int j = 0; j < count; j++) {
             int slot = slots[j];
+            int integer = slot >= 0 && (P.cpf[slot] == MTLPixelFormatRG32Uint || P.cpf[slot] == MTLPixelFormatRGBA32Uint);
             typedef struct { MTLPixelFormat color[GL_DRAW_SLOTS], depth, stencil; int slot, mask; } clear_key;
             static __strong id<MTLRenderPipelineState> cache[32]; static clear_key keys[32]; static int nc;
             clear_key key = {0}; memcpy(key.color, P.cpf, sizeof key.color);
             key.depth = P.dpf; key.stencil = P.spf; key.slot = slot; key.mask = slot >= 0 ? S.cmask[slot] : 0;
             id<MTLRenderPipelineState> pso = nil;
             for (int i = 0; i < nc; i++) if (memcmp(&keys[i], &key, sizeof key) == 0) { pso = cache[i]; break; }
-            if (!pso && g_util) {
+            if (!pso && g_clear) {
                 MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-                pd.vertexFunction = [g_util newFunctionWithName:@"clr_vs"];
-                if (slot >= 0) pd.fragmentFunction = [g_util newFunctionWithName:[NSString stringWithFormat:@"clr_fs_%d", slot]];
+                pd.vertexFunction = [g_clear newFunctionWithName:@"clr_vs"];
+                if (slot >= 0) pd.fragmentFunction = [g_clear newFunctionWithName:[NSString stringWithFormat:@"clr_fs_%d_%s", slot, integer ? "uint" : "float"]];
                 for (int i = 0; i < GL_DRAW_SLOTS; i++) {
                     if (!P.cpf[i]) continue;
                     pd.colorAttachments[i].pixelFormat = P.cpf[i];
@@ -1289,7 +1290,11 @@ static void clear_buffers(GLbitfield mask, unsigned color_slots) {
             }
             [e setScissorRect:(MTLScissorRect){sc[0], sc[1], sc[2], sc[3]}];
             float z = (float)S.clear_d; [e setVertexBytes:&z length:4 atIndex:0];
-            if (slot >= 0) [e setFragmentBytes:S.clear_c length:16 atIndex:0];
+            if (integer) {
+                uint32_t values[4];
+                for (int i = 0; i < 4; i++) values[i] = (uint32_t)fmin((double)UINT32_MAX, fmax(0.0, S.clear_c[i]));
+                [e setFragmentBytes:values length:sizeof values atIndex:0];
+            } else if (slot >= 0) [e setFragmentBytes:S.clear_c length:sizeof S.clear_c atIndex:0];
             [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         }
         enc_reset();   // the next draw sets its own state again
@@ -1476,7 +1481,7 @@ GLB(glGetQueryObjectui64v, void, GLuint name, GLenum what, uint64_t *result) { q
 // ---------- Queries ----------
 static const char *const g_exts[] = {"GL_ARB_ES3_2_compatibility", "GL_ARB_ES3_compatibility", "GL_ARB_texture_compression_bptc", "GL_ARB_texture_compression_rgtc",
     "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_filter_anisotropic", "GL_ARB_vertex_array_object", "GL_ARB_direct_state_access", "GL_ARB_half_float_vertex",
-    "GL_ARB_framebuffer_object", "GL_ARB_texture_float", "GL_EXT_texture_sRGB", "GL_KHR_texture_compression_astc_ldr", "GL_NV_shadow_samplers_cube"};
+    "GL_ARB_framebuffer_object", "GL_ARB_copy_image", "GL_ARB_texture_float", "GL_EXT_texture_sRGB", "GL_KHR_texture_compression_astc_ldr", "GL_NV_shadow_samplers_cube"};
 #define NEXTS (int)(sizeof g_exts / sizeof *g_exts)
 GL(glGetString, const char *, GLenum n) {
     switch (n) {
