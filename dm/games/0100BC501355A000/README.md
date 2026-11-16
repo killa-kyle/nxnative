@@ -37,3 +37,8 @@ the app's Documents on iOS or under
 **English (Preview)** before Play. **Japanese** leaves the pack inactive. Both
 choices share the save directory. If the pack is missing, the game runs in
 Japanese and logs the fallback.
+
+[A7thSteve’s English guide](https://gamefaqs.gamespot.com/switch/300156-densha-de-go-hashirou-yamanote-sen/faqs/78831)
+covers menus, controls, and route terminology. It describes the PS4 release.
+Use it to cross-check terminology against Switch screens and translate from
+the Switch build’s own text.
