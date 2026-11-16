@@ -117,6 +117,14 @@ Off by default: each controller is a player as soon as it connects, in the order
 
 ## Performance
 
+### Frame delivery
+
+**In order** keeps display-link frames in sequence for steadier pacing. **Newest frame** can reduce latency by dropping an older frame when the display has fallen behind.
+
+### Display queue
+
+**Automatic** uses the host's display-dependent queue length. Choose **One frame** to reduce latency or **Two frames** to give GPU work more time to finish. These settings apply at the next launch.
+
 These settings change how the app hands frames to the screen and how it prepares the GPU's work. The game's tested defaults are a good start; change them when a game stutters, runs hot, or you want less latency.
 
 ### Frame buffering

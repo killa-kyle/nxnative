@@ -15,7 +15,7 @@ settings = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(settings)
 
 BOTW, WONDER = '01007EF00011E000', '010015100B514000'
-PERFORMANCE_NVN = ['DM_PRESENT_SNAP', 'DM_PSO_MTL4', 'DM_PSO_PREBUILD', 'DM_NVN_ENC_THREAD', 'DM_FPS_HOLD', 'DM_METAL_HUD']
+PERFORMANCE_NVN = ['DM_PRESENT_FIFO', 'DM_PRESENT_LATENCY', 'DM_PRESENT_SNAP', 'DM_PSO_MTL4', 'DM_PSO_PREBUILD', 'DM_NVN_ENC_THREAD', 'DM_FPS_HOLD', 'DM_METAL_HUD']
 
 
 def build(gid, api, platform=None):
@@ -45,6 +45,16 @@ class LauncherSettingsTests(unittest.TestCase):
                 s = build(gid, api)['DM_PRESENT_UPSCALE']
                 self.assertEqual((s['kind'], s['section'], s['default']), ('choice', 'Game', 'off'))
                 self.assertEqual(s['options'], [['off', 'Standard'], ['metalfx', 'MetalFX']])
+
+    def test_display_tuning_available_for_each_graphics_api(self):
+        for api, gid in [('nvn', BOTW), ('vulkan', '0100535012974000'), ('gl', '010014E00DB56000')]:
+            with self.subTest(api=api):
+                rows = build(gid, api)
+                self.assertEqual(rows['DM_PRESENT_FIFO']['default'], '1')
+                self.assertEqual(rows['DM_PRESENT_LATENCY']['default'], '0')
+                self.assertEqual(rows['DM_PRESENT_LATENCY']['options'], [
+                    ['0', 'Automatic'], ['1', 'One frame'], ['2', 'Two frames'],
+                ])
 
     def test_frame_buffering_by_graphics_api(self):
         for api, gid in [('nvn', BOTW), ('vulkan', '0100535012974000'), ('gl', '010014E00DB56000'), ('', BOTW)]:
