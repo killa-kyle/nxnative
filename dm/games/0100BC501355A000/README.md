@@ -42,3 +42,13 @@ Japanese and logs the fallback.
 covers menus, controls, and route terminology. It describes the PS4 release.
 Use it to cross-check terminology against Switch screens and translate from
 the Switch build’s own text.
+
+[DDGCrew’s Final PC translation](https://github.com/ddgcrew/ddgfinal-en) uses a
+Windows installer to replace seven game DAT archives, with separate menu,
+title, in-game graphics and results data. [libdgf](https://github.com/GMMan/libdgf)
+documents the DAT and TXM formats. Use the PC release to compare terminology
+and check coverage across screens. Yamanote’s tutorial prompts are localized
+text constants in cooked Blueprint exports, so the patch writes original
+English translations into these fields. It keeps the opcode, string terminator
+and jump offsets intact and validates the original export fingerprints. Text
+baked into textures, HUD labels and additional modes remain separate work.
