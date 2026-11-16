@@ -164,13 +164,35 @@ def legacy_frame_step(ctx):
     ctx.emit(B(ctx.here(), site + 4))
     ctx.put(site, [B(site, start)], '1.1.0 game speed and delta time use the host frame step')
 
+    view = ctx.others['1.1.0 view render size']
+    if view is None:
+        return
+    # 1.1.0 computes both extents in the view setup function before clamping them.
+    # Keep the game's multiplier and apply the user's scale to the computed extents.
+    site = view + 0x3d4
+    ctx.site(site - 0xc, '08d0a8522209221e0109211e0301271e')
+    start = ctx.here()
+    ctx.emit(ADRP(8, ctx.here(), ctx.state))
+    for word in (0xbd401103,   # ldr s3,[x8,#0x10]  render scale
+                 0x1e202068,   # fcmp s3,#0.0
+                 0x5400006d,   # b.le clamp        scale not set
+                 0x1e230842,   # fmul s2,s2,s3
+                 0x1e230821,   # fmul s1,s1,s3
+                 0x52a8d008,   # clamp: mov w8,#0x46800000
+                 0x1e270103):  # fmov s3,w8
+        ctx.emit(word)
+    ctx.emit(B(ctx.here(), site + 4))
+    ctx.put(site, [B(site, start)], '1.1.0 view render extents use the host render scale')
+    ctx.render_scale = 1
+
 
 # Placed by the functions they patch, on any build that keeps all six (checked on 1.4.3, 2026-11-09: rewritten byte-identical to the build entry it had until then,
 # FRAME_STEP of build 277178b7…, at main+0x2db174, +0x2daa20, +0x3e55e0, +0x1fbb50, +0xbe1304 and +0xd5c24)
 MATCH_FRAME_STEP = {'main': [
     {'name': '60 fps frame step and render scale', 'size': 480,
      'fingerprints': ['3cdca70e19a2fe813a4ef76fc89433eaceb5b1ef233ccb0fcf8339eaad3f4ae1'],
-     'stub': legacy_frame_step},
+     'stub': legacy_frame_step,
+     'others': {'1.1.0 view render size': {'size': 4016, 'fingerprints': ['393ec028ac9c4198b05345781e1b086e29ce935c300dd1f08bf7eb550478bf6e']}}},
     {'name': '60 fps frame step and render scale', 'size': 664, 'fingerprints': ['568aa53f9c6cfb840d42343952d0607b8f591bd03371888da644cbff748c16a1'],   # 1.4.3 main+0x2db174
      'stub': matched_frame_step,
      'others': {'game step reader 1': {'size': 856, 'fingerprints': ['7bdc3508ead27be8afedb9ae131f5b84787fd8554014d7a84cffa445dfff560a']},   # main+0x2daa20
