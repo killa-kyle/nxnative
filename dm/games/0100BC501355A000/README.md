@@ -29,3 +29,11 @@ Run `build_english_probe.py <RomFS.img> <overlay directory> --repak <repak>`
 with repak 0.2.3. The script checks each original export’s fingerprint and
 writes a separate pak. Use the overlay directory as `DM_ROMFS_OVERLAY` in the
 Mac host test. Keep the rebuilt pak and its source assets outside Git.
+
+The **Text language** setting is available for the matching 1.0.0 main build.
+Build the overlay into an `english-preview` directory. Put that directory in
+the app's Documents on iOS or under
+`~/Library/Application Support/nxnative/0100BC501355A000/` on Mac. Select
+**English (Preview)** before Play. **Japanese** leaves the pack inactive. Both
+choices share the save directory. If the pack is missing, the game runs in
+Japanese and logs the fallback.

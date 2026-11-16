@@ -161,6 +161,20 @@ static const char *fwd_slashes(const char *p, char *buf, size_t n) {
     buf[i] = 0; return buf;
 }
 static int norm_rest(const char *rest, char *out, size_t n);
+static const char *rom_overlay(void) {
+    const char *override = getenv("DM_ROMFS_OVERLAY");
+    if (override) return override;
+    const char *lang = getenv("DM_TEXT_LANGUAGE");
+    if (!lang || strcmp(lang, "en") || DM_GAME_PROGRAM_ID != 0x0100BC501355A000ull ||
+        strcmp(dm_main_build(), "72556bdf87ff54ea037a56370036d49b")) return NULL;
+    if (access("english-preview/DgocGame/Content/Paks/pakchunk1-English_P.pak", R_OK)) {
+        LOG("English preview pack unavailable; using Japanese text");
+        return NULL;
+    }
+    LOG("English preview pack enabled");
+    return "english-preview";
+}
+
 static int rom_overlay_path(const mount_t *m, const char *rest, char *out, size_t n);
 // A path on an image mount: returns 1 with the mount in *mi and the entry in *k (-1 with errno set when there is none); 0 for a path on any other mount, or one an overlay folder (DM_ROMFS_OVERLAY) has, which then opens as a host file
 static int img_path(const char *p, int *mi, int64_t *k) {
@@ -188,7 +202,7 @@ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
     g_mnt[g_nmnt].txn_root = -1;
     atomic_store(&g_mnt[g_nmnt].poison, 0);
     atomic_store(&g_mnt[g_nmnt].first_write_ns, 0);
-    const char *overlay = !strcmp(name, "rom") ? getenv("DM_ROMFS_OVERLAY") : NULL;
+    const char *overlay = !strcmp(name, "rom") ? rom_overlay() : NULL;
     if (overlay) strlcpy(g_mnt[g_nmnt].overlay, overlay, sizeof g_mnt[0].overlay);
     // The transaction directory cannot be set up (leftovers cannot be cleared / clone failed, which really happens on a full disk): do not exit; mount the committed directory read-only -- saves still read, every write fails, commits are no-ops, the committed version is untouched, and the front end is told
     // (each of these three failures used to call die: with the phone's storage full the game exited as soon as it mounted its saves)
@@ -542,7 +556,7 @@ HLE_FORCE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", "fsp-srv; rom reads the host d
 HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory", Result, h_fs_MountRom, const char *name, void *cache, size_t sz) { dm_thread_service_request();
     (void)cache; (void)sz; char b[1024];
     Result r = mount(name, envdir("DM_ROMFS", "romfs", b, sizeof b), 1);
-    const char *overlay = getenv("DM_ROMFS_OVERLAY");
+    const char *overlay = rom_overlay();
     if (r == RES_OK && overlay) {
         PATH_LOCK();
         for (int i = 0; i < g_nmnt; i++) if (mnt_named(&g_mnt[i], name)) {

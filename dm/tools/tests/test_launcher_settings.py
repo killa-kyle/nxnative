@@ -31,6 +31,14 @@ def rows_with_languages(listed):   # the settings rows, by variable, of a game w
 
 
 class LauncherSettingsTests(unittest.TestCase):
+    def test_text_language_requires_the_matching_game_build(self):
+        for platform in ('ios', 'mac'):
+            with patch.object(settings, 'fixups_keys', return_value={'BUILD_ID': '72556bdf87ff54ea037a56370036d49b'}):
+                row = build(BOTW, 'nvn', platform)['DM_TEXT_LANGUAGE']
+                self.assertEqual(row['default'], 'ja')
+                self.assertEqual(row['options'], [['ja', 'Japanese'], ['en', 'English (Preview)']])
+            self.assertNotIn('DM_TEXT_LANGUAGE', build(BOTW, 'nvn', platform))
+
     def test_game_language_row_offers_the_games_own_or_every_language_when_unknown(self):
         self.assertNotIn('DM_LANG', rows_with_languages(['ja']))   # one language: nothing to pick
         s = rows_with_languages(['en-US', 'ja'])['DM_LANG']
