@@ -2067,8 +2067,8 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 
 - **Symptom:** Factorio exits from its 3D bitmap loader after the packed atlas copy succeeds.
 - **Cause:** `glGetTexImage` resolves to null at `main+0x94c980`. This path reads mip level zero of the bound 2D texture as RGBA bytes.
-- **Fix:** Share the synchronous Metal texture readback with `glReadPixels`. Copy rows into the caller's memory or its bound pixel pack buffer with the configured row alignment. The 2D texture path supports RGBA8, R8, RG8, and matching unsigned integer reads.
-- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. Mac regressions verify the pixels and padding of a private render target after a GPU clear and exact RG32UI words at a pixel pack buffer offset. Post-fix Duo gameplay remains unverified.
+- **Fix:** Share the synchronous Metal texture readback with `glReadPixels`. Copy rows into the caller's memory or its bound pixel pack buffer with the configured row alignment. The 2D texture path supports RGBA8, R8, RG8, and matching unsigned integer reads. Decode S3TC to RGBA8 through the shared Metal copy shader before readback.
+- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. Mac regressions verify the pixels and padding of a private render target after a GPU clear, exact RG32UI words at a pixel pack buffer offset, and decoded BC3 color, alpha, and mip levels. Post-fix Duo gameplay remains unverified.
 
 ### GL textures, swizzles and uploads
 

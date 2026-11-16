@@ -2158,14 +2158,50 @@ GL(glBlitFramebuffer, void, GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx
     (void)filter; blit_args a = {{sx0, sy0, sx1, sy1}, {dx0, dy0, dx1, dy1}, (GLbitfield)mask}; ((void (*)(const blit_args *))(const void *)blit_impl_bs)(&a);
 }
 GL(glResolveMultisampleFramebufferAPPLE, void, void) { RED1("glResolveMultisampleFramebufferAPPLE not implemented"); }
+// Decode S3TC via the same nearest-sample copy shader as the NVN texture path.
+static id<MTLTexture> decode_s3tc_readback(id<MTLTexture> source, int level, MTLRegion region, int srgb) {
+    static __strong id<MTLRenderPipelineState> pipelines[2];
+    MTLPixelFormat format = srgb ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
+    if (!pipelines[srgb]) {
+        NSError *error = nil;
+        id<MTLLibrary> lib = host_msl_lib(g_dev, nil, "copy", &error);
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        if (!pd.vertexFunction || !pd.fragmentFunction) return nil;
+        pd.colorAttachments[0].pixelFormat = format;
+        pipelines[srgb] = [g_dev newRenderPipelineStateWithDescriptor:pd error:&error];
+        if (!pipelines[srgb]) return nil;
+    }
+    id<MTLTexture> sample = source;
+    if (level) sample = [source newTextureViewWithPixelFormat:source.pixelFormat textureType:MTLTextureType2D
+                                                      levels:NSMakeRange(level, 1) slices:NSMakeRange(0, 1)];
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
+                                             width:region.size.width height:region.size.height mipmapped:NO];
+    td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> decoded = [g_dev newTextureWithDescriptor:td];
+    if (!sample || !decoded) return nil;
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = decoded;
+    rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> e = [cb_get() renderCommandEncoderWithDescriptor:rp];
+    [e setRenderPipelineState:pipelines[srgb]];
+    [e setFragmentTexture:sample atIndex:0]; [e setFragmentSamplerState:g_samp0 atIndex:0];
+    float coords[] = {region.origin.x, region.origin.y, 1, 1, 0, 0, sample.width, sample.height};
+    [e setFragmentBytes:coords length:sizeof coords atIndex:0];
+    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [e endEncoding];
+    return decoded;
+}
 // Read back pixel rows in GL's order, which matches the storage order of this layer.
 static void read_texture(id<MTLTexture> src, int level, int slice, MTLRegion region, GLenum format, GLenum type, void *data, const char *fn) {
     if (!region.size.width || !region.size.height || (!data && !S.pack_buf)) return;
     NSUInteger pf = src.pixelFormat;
     size_t bytes = 0;
     int bgra = pf == MTLPixelFormatBGRA8Unorm;
+    int s3tc = src.textureType == MTLTextureType2D && pf >= MTLPixelFormatBC1_RGBA && pf <= MTLPixelFormatBC3_RGBA_sRGB;
     if (type == GL_UNSIGNED_BYTE) {
-        if (format == GL_RGBA && (pf == MTLPixelFormatRGBA8Unorm || pf == MTLPixelFormatRGBA8Unorm_sRGB || bgra)) bytes = 4;
+        if (format == GL_RGBA && (pf == MTLPixelFormatRGBA8Unorm || pf == MTLPixelFormatRGBA8Unorm_sRGB || bgra || s3tc)) bytes = 4;
         else if (format == GL_RED && pf == MTLPixelFormatR8Unorm) bytes = 1;
         else if (format == GL_RG && pf == MTLPixelFormatRG8Unorm) bytes = 2;
     } else if (type == GL_UNSIGNED_INT) {
@@ -2193,6 +2229,12 @@ static void read_texture(id<MTLTexture> src, int level, int slice, MTLRegion reg
     if (g_pend_clear.bits) clears_flush();
     dm_gfx_enter();
     pass_end();
+    if (s3tc) {
+        int srgb = pf == MTLPixelFormatBC1_RGBA_sRGB || pf == MTLPixelFormatBC2_RGBA_sRGB || pf == MTLPixelFormatBC3_RGBA_sRGB;
+        src = decode_s3tc_readback(src, level, region, srgb);
+        if (!src) { dm_gfx_leave(); gl_error_at(GL_INVALID_OPERATION, fn); return; }
+        level = 0; slice = 0; region.origin = MTLOriginMake(0, 0, 0);
+    }
     id<MTLBuffer> out = [g_dev newBufferWithLength:pitch * region.size.height options:MTLResourceStorageModeShared];
     if (!out) { dm_gfx_leave(); gl_error_at(GL_INVALID_OPERATION, fn); return; }
     id<MTLCommandBuffer> cb = cb_get();

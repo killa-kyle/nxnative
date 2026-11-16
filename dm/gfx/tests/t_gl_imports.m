@@ -469,6 +469,27 @@ static void test_texture_readback(void) {
     h_glDeleteBuffers(1, &pbo); assert(!S.pack_buf);
     h_glDeleteTextures(2, tex);
 }
+static void test_s3tc_readback(void) {
+    if (!g_dev.supportsBCTextureCompression) return;
+    GLuint texture; h_glGenTextures(1, &texture); h_glBindTexture(GL_TEXTURE_2D, texture);
+    const uint8_t blocks[2][16] = {{[0] = 65, [9] = 0xf8}, {[0] = 201, [8] = 0xe0, [9] = 0x07}};
+    const uint8_t blue[16] = {[0] = 127, [8] = 0x1f};
+    h_glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5, 4, 8, 0, sizeof blocks, blocks);
+    h_glCompressedTexImage2D(GL_TEXTURE_2D, 1, GL_COMPRESSED_RGBA_S3TC_DXT5, 2, 4, 0, sizeof blue, blue);
+    uint8_t pixels[32][4] = {0};
+    h_glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    assert(h_glGetError() == GL_NO_ERROR);
+    for (int i = 0; i < 32; i++) {
+        assert(pixels[i][0] == (i < 16 ? 255 : 0) && pixels[i][1] == (i < 16 ? 0 : 255));
+        assert(pixels[i][2] == 0 && pixels[i][3] == (i < 16 ? 65 : 201));
+    }
+    uint8_t mip[8][4] = {0};
+    h_glGetTexImage(GL_TEXTURE_2D, 1, GL_RGBA, GL_UNSIGNED_BYTE, mip);
+    assert(h_glGetError() == GL_NO_ERROR);
+    for (int i = 0; i < 8; i++)
+        assert(mip[i][0] == 0 && mip[i][1] == 0 && mip[i][2] == 255 && mip[i][3] == 127);
+    h_glDeleteTextures(1, &texture);
+}
 static void test_timer_queries(void) {
     GLuint names[3];
     assert(import("glGenQueries") == (void *)h_glGenQueries);
@@ -604,6 +625,7 @@ int main(int argc, char **argv) {
     test_integer_color_clear();
     test_packed_image_copy();
     test_texture_readback();
+    test_s3tc_readback();
     test_timer_queries();
 
     unsigned long sz;
@@ -623,6 +645,6 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, integer clears, packed texture copies, texture readback, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, integer clears, packed texture copies, texture and BC3 readback, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }
