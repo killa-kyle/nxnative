@@ -86,6 +86,7 @@ enum {
     GL_CLAMP_TO_BORDER = 0x812d, GL_CLAMP_TO_EDGE = 0x812f, GL_TEXTURE_MAX_LEVEL = 0x813d,
     GL_DEPTH_COMPONENT16 = 0x81a5, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT32,
     GL_MAJOR_VERSION = 0x821b, GL_MINOR_VERSION, GL_NUM_EXTENSIONS, GL_TIME_ELAPSED = 0x88bf, GL_TIMESTAMP = 0x8e28,
+    GL_TEXTURE_WIDTH = 0x1000, GL_TEXTURE_HEIGHT, GL_TEXTURE_COMPRESSED_IMAGE_SIZE = 0x86a0, GL_TEXTURE_COMPRESSED,
     GL_QUERY_RESULT = 0x8866, GL_QUERY_RESULT_AVAILABLE, GL_RG = 0x8227, GL_R8 = 0x8229, GL_RG8 = 0x822b, GL_R16F = 0x822d, GL_R32F, GL_RG16F, GL_RG32F,
     GL_UNSIGNED_SHORT_5_6_5 = 0x8363, GL_MIRRORED_REPEAT = 0x8370,
     GL_COMPRESSED_RGB_S3TC_DXT1 = 0x83f0, GL_COMPRESSED_RGBA_S3TC_DXT1, GL_COMPRESSED_RGBA_S3TC_DXT3, GL_COMPRESSED_RGBA_S3TC_DXT5,
@@ -1864,6 +1865,25 @@ static void teximg_impl(const teximg_args *a) {
         tex_image(a->target, a->level, f, cv, a->w, a->h, a->pixels || a->compressed ? conv : (free(conv), (void *)NULL), pitch);
     }
 }
+GL(glGetTexLevelParameteriv, void, GLenum target, GLint level, GLenum what, GLint *value) {
+    if (!value) return;
+    if (target != GL_TEXTURE_2D) { gl_error(GL_INVALID_ENUM); return; }
+    if (level < 0 || level >= MAXLV) { gl_error(GL_INVALID_VALUE); return; }
+    tex_t *t = bound_tex(target);
+    int defined = t && t->fmt >= 0 && t->w && t->h &&
+        (t->made ? level < t->levels : (t->slevels ? level < t->slevels : (t->defined >> level) & 1));
+    uint32_t w = defined ? umax(1, t->w >> level) : 0, h = defined ? umax(1, t->h >> level) : 0;
+    switch (what) {
+        case GL_TEXTURE_WIDTH: *value = w; return;
+        case GL_TEXTURE_HEIGHT: *value = h; return;
+        case GL_TEXTURE_COMPRESSED: *value = defined && g_fmt[t->fmt].kind == K_BLOCK; return;
+        case GL_TEXTURE_COMPRESSED_IMAGE_SIZE:
+            if (!defined || g_fmt[t->fmt].kind != K_BLOCK) { gl_error(GL_INVALID_OPERATION); return; }
+            *value = (GLint)(fmt_pitch(t->fmt, w) * fmt_rows(t->fmt, h));
+            return;
+        default: gl_error(GL_INVALID_ENUM);
+    }
+}
 GL(glTexImage2D, void, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei h, GLint border, GLenum format, GLenum type, const void *pixels) {
     (void)border; teximg_args a = {target, level, ifmt, 0, 0, w, h, format, type, pixels, 0, 0, 0}; ((void (*)(const teximg_args *))(const void *)teximg_impl_bs)(&a);
 }
@@ -2194,13 +2214,14 @@ static id<MTLTexture> decode_s3tc_readback(id<MTLTexture> source, int level, MTL
     return decoded;
 }
 // Read back pixel rows in GL's order, which matches the storage order of this layer.
-static void read_texture(id<MTLTexture> src, int level, int slice, MTLRegion region, GLenum format, GLenum type, void *data, const char *fn) {
+static void read_texture(id<MTLTexture> src, int level, int slice, MTLRegion region, GLenum format, GLenum type, void *data, const char *fn, const fmt_t *blocks) {
     if (!region.size.width || !region.size.height || (!data && !S.pack_buf)) return;
     NSUInteger pf = src.pixelFormat;
     size_t bytes = 0;
     int bgra = pf == MTLPixelFormatBGRA8Unorm;
     int s3tc = src.textureType == MTLTextureType2D && pf >= MTLPixelFormatBC1_RGBA && pf <= MTLPixelFormatBC3_RGBA_sRGB;
-    if (type == GL_UNSIGNED_BYTE) {
+    if (blocks) bytes = blocks->bytes;
+    else if (type == GL_UNSIGNED_BYTE) {
         if (format == GL_RGBA && (pf == MTLPixelFormatRGBA8Unorm || pf == MTLPixelFormatRGBA8Unorm_sRGB || bgra || s3tc)) bytes = 4;
         else if (format == GL_RED && pf == MTLPixelFormatR8Unorm) bytes = 1;
         else if (format == GL_RG && pf == MTLPixelFormatRG8Unorm) bytes = 2;
@@ -2218,35 +2239,37 @@ static void read_texture(id<MTLTexture> src, int level, int slice, MTLRegion reg
         region.size.height > umax(1, (uint32_t)src.height >> level) - region.origin.y) {
         gl_error_at(GL_INVALID_VALUE, fn); return;
     }
-    size_t pitch = region.size.width * bytes;
-    size_t dp = (pitch + S.pack_align - 1) / S.pack_align * S.pack_align;
+    size_t rows = blocks ? (region.size.height + blocks->bh - 1) / blocks->bh : region.size.height;
+    size_t columns = blocks ? (region.size.width + blocks->bw - 1) / blocks->bw : region.size.width;
+    size_t pitch = columns * bytes;
+    size_t dp = blocks ? pitch : (pitch + S.pack_align - 1) / S.pack_align * S.pack_align;
     buf_t *pack = buf_of(S.pack_buf);
     uintptr_t offset = (uintptr_t)data;
     if (S.pack_buf && (!pack || !pack->mb || offset > pack->size ||
-        (region.size.height - 1) * dp + pitch > pack->size - offset)) {
+        (rows - 1) * dp + pitch > pack->size - offset)) {
         gl_error_at(GL_INVALID_OPERATION, fn); return;
     }
     if (g_pend_clear.bits) clears_flush();
     dm_gfx_enter();
     pass_end();
-    if (s3tc) {
+    if (s3tc && !blocks) {
         int srgb = pf == MTLPixelFormatBC1_RGBA_sRGB || pf == MTLPixelFormatBC2_RGBA_sRGB || pf == MTLPixelFormatBC3_RGBA_sRGB;
         src = decode_s3tc_readback(src, level, region, srgb);
         if (!src) { dm_gfx_leave(); gl_error_at(GL_INVALID_OPERATION, fn); return; }
         level = 0; slice = 0; region.origin = MTLOriginMake(0, 0, 0);
     }
-    id<MTLBuffer> out = [g_dev newBufferWithLength:pitch * region.size.height options:MTLResourceStorageModeShared];
+    id<MTLBuffer> out = [g_dev newBufferWithLength:pitch * rows options:MTLResourceStorageModeShared];
     if (!out) { dm_gfx_leave(); gl_error_at(GL_INVALID_OPERATION, fn); return; }
     id<MTLCommandBuffer> cb = cb_get();
     id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
     [b copyFromTexture:src sourceSlice:slice sourceLevel:level sourceOrigin:region.origin sourceSize:region.size
-              toBuffer:out destinationOffset:0 destinationBytesPerRow:pitch destinationBytesPerImage:pitch * region.size.height];
+              toBuffer:out destinationOffset:0 destinationBytesPerRow:pitch destinationBytesPerImage:pitch * rows];
     [b endEncoding];
     cb_commit(); [cb waitUntilCompleted];
     dm_gfx_leave();
     if (cb.status != MTLCommandBufferStatusCompleted) { gl_error_at(GL_INVALID_OPERATION, fn); return; }
     uint8_t *base = pack ? (uint8_t *)pack->mb.contents + offset : data;
-    for (size_t row = 0; row < region.size.height; row++) {
+    for (size_t row = 0; row < rows; row++) {
         uint8_t *d = base + row * dp; const uint8_t *s = (const uint8_t *)out.contents + row * pitch;
         if (!bgra) memcpy(d, s, pitch);
         else for (size_t x = 0; x < region.size.width; x++) {
@@ -2261,21 +2284,29 @@ static void readpix_impl(const readpix_args *a) {
     @autoreleasepool {
         if (a->w < 0 || a->h < 0 || a->x < 0 || a->y < 0) { gl_error(GL_INVALID_VALUE); return; }
         int level, slice; id<MTLTexture> src = fb_color(S.read_fb, 1, &level, &slice);
-        read_texture(src, level, slice, MTLRegionMake2D(a->x, a->y, a->w, a->h), a->format, a->type, a->data, "glReadPixels");
+        read_texture(src, level, slice, MTLRegionMake2D(a->x, a->y, a->w, a->h), a->format, a->type, a->data, "glReadPixels", NULL);
     }
 }
 GL(glReadPixels, void, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, void *data) {
     readpix_args a = {x, y, w, h, format, type, data}; ((void (*)(const readpix_args *))(const void *)readpix_impl_bs)(&a);
 }
-GLB(glGetTexImage, void, GLenum target, GLint level, GLenum format, GLenum type, void *data) {
-    if (target != GL_TEXTURE_2D) { gl_error(GL_INVALID_ENUM); return; }
+static void read_texture_level(GLenum target, GLint level, GLenum format, GLenum type, void *data, int compressed, const char *fn) {
+    if (target != GL_TEXTURE_2D) { gl_error_at(GL_INVALID_ENUM, fn); return; }
     @autoreleasepool {
         tex_t *t = bound_tex(target);
-        if (!t || (!t->made && !tex_make(t, 0)) || !t->tex) { gl_error(GL_INVALID_OPERATION); return; }
-        if (level < 0 || level >= t->levels) { gl_error(GL_INVALID_VALUE); return; }
+        if (!t || (!t->made && !tex_make(t, 0)) || !t->tex) { gl_error_at(GL_INVALID_OPERATION, fn); return; }
+        if (level < 0 || level >= t->levels) { gl_error_at(GL_INVALID_VALUE, fn); return; }
+        const fmt_t *blocks = compressed ? &g_fmt[t->fmt] : NULL;
+        if (blocks && blocks->kind != K_BLOCK) { gl_error_at(GL_INVALID_OPERATION, fn); return; }
         MTLRegion region = MTLRegionMake2D(0, 0, umax(1, t->w >> level), umax(1, t->h >> level));
-        read_texture(t->tex, level, 0, region, format, type, data, "glGetTexImage");
+        read_texture(t->tex, level, 0, region, format, type, data, fn, blocks);
     }
+}
+GLB(glGetTexImage, void, GLenum target, GLint level, GLenum format, GLenum type, void *data) {
+    read_texture_level(target, level, format, type, data, 0, "glGetTexImage");
+}
+GLB(glGetCompressedTexImage, void, GLenum target, GLint level, void *data) {
+    read_texture_level(target, level, 0, 0, data, 1, "glGetCompressedTexImage");
 }
 
 // ---------- Shaders and programs ----------

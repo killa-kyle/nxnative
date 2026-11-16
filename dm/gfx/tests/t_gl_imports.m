@@ -476,6 +476,18 @@ static void test_s3tc_readback(void) {
     const uint8_t blue[16] = {[0] = 127, [8] = 0x1f};
     h_glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5, 4, 8, 0, sizeof blocks, blocks);
     h_glCompressedTexImage2D(GL_TEXTURE_2D, 1, GL_COMPRESSED_RGBA_S3TC_DXT5, 2, 4, 0, sizeof blue, blue);
+    assert(import("glGetTexLevelParameteriv") == (void *)h_glGetTexLevelParameteriv);
+    assert(import("glGetCompressedTexImage") == (void *)h_glGetCompressedTexImage_bs);
+    GLint size = 0;
+    h_glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_COMPRESSED_IMAGE_SIZE, &size);
+    assert(size == sizeof blocks && !tex_of(texture)->made);
+    h_glGetTexLevelParameteriv(GL_TEXTURE_2D, 1, GL_TEXTURE_COMPRESSED_IMAGE_SIZE, &size);
+    assert(size == sizeof blue);
+    uint8_t compressed[32] = {0};
+    h_glGetCompressedTexImage(GL_TEXTURE_2D, 0, compressed);
+    assert(memcmp(compressed, blocks, sizeof blocks) == 0);
+    h_glGetCompressedTexImage(GL_TEXTURE_2D, 1, compressed);
+    assert(memcmp(compressed, blue, sizeof blue) == 0);
     uint8_t pixels[32][4] = {0};
     h_glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     assert(h_glGetError() == GL_NO_ERROR);

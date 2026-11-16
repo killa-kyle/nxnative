@@ -2070,6 +2070,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** Share the synchronous Metal texture readback with `glReadPixels`. Copy rows into the caller's memory or its bound pixel pack buffer with the configured row alignment. The 2D texture path supports RGBA8, R8, RG8, and matching unsigned integer reads. Decode S3TC to RGBA8 through the shared Metal copy shader before readback.
 - **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. Mac regressions verify the pixels and padding of a private render target after a GPU clear, exact RG32UI words at a pixel pack buffer offset, and decoded BC3 color, alpha, and mip levels. Post-fix Duo gameplay remains unverified.
 
+### OpenGL compressed texture cache readback
+
+- **Symptom:** Factorio can read the decoded sprite pixels, then exits while collecting the compressed atlas for its cache.
+- **Cause:** The 2D texture path calls an unresolved `glGetTexLevelParameteriv` at `main+0x94cbfc` to ask for `GL_TEXTURE_COMPRESSED_IMAGE_SIZE`, followed by `glGetCompressedTexImage` at `main+0x94cc30`.
+- **Fix:** Report the actual stored block size for the requested mip and read the packed blocks through the shared Metal transfer path without applying ordinary uncompressed pixel row alignment.
+- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. Both Mac loader modes compare the queried sizes and exact packed BC3 data at two mip levels. Post-fix Duo gameplay remains unverified.
+
 ### GL textures, swizzles and uploads
 
 - Textures are made on first use from the levels given so far (Digimon's loader defines them level by level). An upload into a texture a pending command buffer may still read is a blit in command order; any other is a CPU write. Metal reads a channel a format lacks as 0 (alpha 1) as GL does, so only luminance / alpha formats get a swizzle: Metal refuses a swizzle on a texture that can be a render target (`Texture swizzling is not compatable with MTLTextureUsageRenderTarget`, Digimon's first story scene).
