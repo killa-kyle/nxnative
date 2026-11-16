@@ -2063,6 +2063,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** Expose the copy entry through the extension queries and use Metal blits for matching-format 2D copies and packed-block copies. Allocate and bind unsigned integer textures and select the shared Metal clear shader with an unsigned output for masked clears on those targets. [Khronos OpenGL reference](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glCopyImageSubData.xhtml)
 - **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. The Mac regressions verify extension discovery, a byte-exact BC1 round trip, and a clear that changes only the selected channels and region of an integer attachment. Post-fix Duo gameplay remains unverified.
 
+### OpenGL texture readback
+
+- **Symptom:** Factorio exits from its 3D bitmap loader after the packed atlas copy succeeds.
+- **Cause:** `glGetTexImage` resolves to null at `main+0x94c980`. This path reads mip level zero of the bound 2D texture as RGBA bytes.
+- **Fix:** Share the synchronous Metal texture readback with `glReadPixels`. Copy rows into the caller's memory or its bound pixel pack buffer with the configured row alignment. The 2D texture path supports RGBA8, R8, RG8, and matching unsigned integer reads.
+- **Found on:** Factorio 2.0.42 on Duo, main build `244c3195a745d4a2f0499f2d5e7a318f`. Mac regressions verify the pixels and padding of a private render target after a GPU clear and exact RG32UI words at a pixel pack buffer offset. Post-fix Duo gameplay remains unverified.
+
 ### GL textures, swizzles and uploads
 
 - Textures are made on first use from the levels given so far (Digimon's loader defines them level by level). An upload into a texture a pending command buffer may still read is a blit in command order; any other is a CPU write. Metal reads a channel a format lacks as 0 (alpha 1) as GL does, so only luminance / alpha formats get a swizzle: Metal refuses a swizzle on a texture that can be a render target (`Texture swizzling is not compatable with MTLTextureUsageRenderTarget`, Digimon's first story scene).

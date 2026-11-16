@@ -93,7 +93,7 @@ enum {
     GL_TEXTURE_MIN_LOD = 0x813a, GL_TEXTURE_MAX_LOD, GL_TEXTURE_BASE_LEVEL,
     GL_TEXTURE_MAX_ANISOTROPY = 0x84fe, GL_MAX_TEXTURE_MAX_ANISOTROPY, GL_TEXTURE_LOD_BIAS = 0x8501, GL_SAMPLER_BINDING = 0x8919,
     GL_INCR_WRAP = 0x8507, GL_DECR_WRAP, GL_TEXTURE_CUBE_MAP = 0x8513, GL_TEXTURE_CUBE_MAP_POSITIVE_X = 0x8515, GL_TEXTURE_CUBE_MAP_NEGATIVE_Z = 0x851a,
-    GL_MAX_VERTEX_ATTRIBS = 0x8869, GL_MAX_TEXTURE_IMAGE_UNITS = 0x8872, GL_RGBA32UI = 0x8d70, GL_RG32UI = 0x823c, GL_RGBA32F = 0x8814, GL_RGB32F, GL_RGBA16F = 0x881a, GL_RGB16F,
+    GL_MAX_VERTEX_ATTRIBS = 0x8869, GL_MAX_TEXTURE_IMAGE_UNITS = 0x8872, GL_RGBA32UI = 0x8d70, GL_RG32UI = 0x823c, GL_RG_INTEGER = 0x8228, GL_RGBA_INTEGER = 0x8d99, GL_RGBA32F = 0x8814, GL_RGB32F, GL_RGBA16F = 0x881a, GL_RGB16F,
     GL_TEXTURE_COMPARE_MODE = 0x884c, GL_TEXTURE_COMPARE_FUNC,
     GL_ARRAY_BUFFER = 0x8892, GL_ELEMENT_ARRAY_BUFFER, GL_DEPTH24_STENCIL8 = 0x88f0, GL_UNIFORM_BUFFER = 0x8a11,
     GL_UNIFORM_BUFFER_BINDING = 0x8a28, GL_MAX_VERTEX_UNIFORM_BLOCKS = 0x8a2b, GL_MAX_FRAGMENT_UNIFORM_BLOCKS = 0x8a2d,
@@ -113,7 +113,7 @@ enum {
     GL_COMPRESSED_RGBA_BPTC_UNORM = 0x8e8c, GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM, GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT, GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT,
     GL_COMPRESSED_RGBA_ASTC_4x4 = 0x93b0, GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4 = 0x93d0,
     GL_DEPTH_STENCIL_ATTACHMENT = 0x821a,
-    GL_CW = 0x900, GL_CCW, GL_POINT_SIZE = 0xb11, GL_POINT_SIZE_RANGE, GL_CULL_FACE_MODE = 0xb45, GL_FRONT_FACE, GL_SCISSOR_BOX = 0xc10, GL_PACK_ALIGNMENT = 0xd05,
+    GL_CW = 0x900, GL_CCW, GL_POINT_SIZE = 0xb11, GL_POINT_SIZE_RANGE, GL_CULL_FACE_MODE = 0xb45, GL_FRONT_FACE, GL_SCISSOR_BOX = 0xc10, GL_PACK_ALIGNMENT = 0xd05, GL_PIXEL_PACK_BUFFER = 0x88eb, GL_PIXEL_PACK_BUFFER_BINDING = 0x88ed,
     GL_MAX_VIEWPORT_DIMS = 0xd3a, GL_COLOR = 0x1800, GL_DEPTH, GL_STENCIL, GL_ZERO = 0, GL_ONE = 1,
     GL_TEXTURE_BINDING_3D = 0x806a, GL_TEXTURE_3D = 0x806f, GL_MAX_3D_TEXTURE_SIZE = 0x8073, GL_SAMPLE_BUFFERS = 0x80a8, GL_SAMPLES, GL_CONTEXT_FLAGS = 0x821e,
     GL_ALIASED_POINT_SIZE_RANGE = 0x846d, GL_TEXTURE_BINDING_CUBE_MAP = 0x8514, GL_MAX_CUBE_MAP_TEXTURE_SIZE = 0x851c, GL_MAX_DRAW_BUFFERS = 0x8824, GL_MAX_ARRAY_TEXTURE_LAYERS = 0x88ff,
@@ -413,7 +413,7 @@ static int sp_check(GLuint n, int prog, const char *fn) {
 // A zero size denotes a whole-buffer binding; it follows a later glBufferData reallocation.
 typedef struct { GLuint buf; size_t offset, size; } ubound_t;
 static struct {
-    GLuint array_buf, uniform_buf, rb, fb, read_fb, prog, vao; int unit;
+    GLuint array_buf, uniform_buf, pack_buf, rb, fb, read_fb, prog, vao; int unit;
     ubound_t ubo[NUBO_BINDINGS];
     struct { GLuint t2d, tcube, t3d, t2da, sampler; } units[NUNITS];
     float clear_c[4]; double clear_d; int clear_s;
@@ -1543,6 +1543,7 @@ GL(glGetIntegerv, void, GLenum p, GLint *v) {
         case GL_MAX_TEXTURE_MAX_ANISOTROPY: *v = 16; return;
         case GL_UNPACK_ALIGNMENT: *v = S.unpack_align; return;
         case GL_PACK_ALIGNMENT: *v = S.pack_align; return;
+        case GL_PIXEL_PACK_BUFFER_BINDING: *v = S.pack_buf; return;
     }
     static GLenum seen[32]; static int n;
     int known = 0; for (int i = 0; i < n; i++) known |= seen[i] == p;
@@ -1567,7 +1568,7 @@ GL(glDeleteBuffers, void, GLsizei n, const GLuint *b) {
     for (GLsizei i = 0; i < n; i++) {
         buf_t *x = buf_of(b[i]); if (!x) continue; x->mb = nil; free(x); g_bufs[b[i]] = NULL;
         vao_t *v = cur_vao();
-        if (S.array_buf == b[i]) S.array_buf = 0; if (S.uniform_buf == b[i]) S.uniform_buf = 0; if (v->ebo == b[i]) v->ebo = 0;
+        if (S.array_buf == b[i]) S.array_buf = 0; if (S.uniform_buf == b[i]) S.uniform_buf = 0; if (S.pack_buf == b[i]) S.pack_buf = 0; if (v->ebo == b[i]) v->ebo = 0;
         for (int j = 0; j < 16; j++) if (v->b[j].buf == b[i]) v->b[j].buf = 0;
         for (int j = 0; j < NUBO_BINDINGS; j++) if (S.ubo[j].buf == b[i]) S.ubo[j] = (ubound_t){0};
     }
@@ -1576,6 +1577,7 @@ GL(glBindBuffer, void, GLenum target, GLuint b) {
     if (target == GL_ARRAY_BUFFER) S.array_buf = b;
     else if (target == GL_ELEMENT_ARRAY_BUFFER) cur_vao()->ebo = b;
     else if (target == GL_UNIFORM_BUFFER) S.uniform_buf = b;
+    else if (target == GL_PIXEL_PACK_BUFFER) S.pack_buf = b;
     else RED1("glBindBuffer target %#x not implemented", target);
 }
 // Indexed UBO calls also bind the generic target, which glBufferData and friends use.
@@ -1595,7 +1597,7 @@ GL(glBindBufferBase, void, GLenum target, GLuint index, GLuint b) {
     bind_uniform_buffer(index, b, 0, 0);
 }
 static buf_t *bound_buf(GLenum target) {
-    return buf_of(target == GL_ARRAY_BUFFER ? S.array_buf : target == GL_ELEMENT_ARRAY_BUFFER ? cur_vao()->ebo : target == GL_UNIFORM_BUFFER ? S.uniform_buf : 0);
+    return buf_of(target == GL_ARRAY_BUFFER ? S.array_buf : target == GL_ELEMENT_ARRAY_BUFFER ? cur_vao()->ebo : target == GL_UNIFORM_BUFFER ? S.uniform_buf : target == GL_PIXEL_PACK_BUFFER ? S.pack_buf : 0);
 }
 // Orphaning: data for a buffer a pending command buffer may still read goes into a new MTLBuffer, so draws already encoded keep the old contents
 GLB(glBufferData, void, GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
@@ -2156,40 +2158,82 @@ GL(glBlitFramebuffer, void, GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx
     (void)filter; blit_args a = {{sx0, sy0, sx1, sy1}, {dx0, dy0, dx1, dy1}, (GLbitfield)mask}; ((void (*)(const blit_args *))(const void *)blit_impl_bs)(&a);
 }
 GL(glResolveMultisampleFramebufferAPPLE, void, void) { RED1("glResolveMultisampleFramebufferAPPLE not implemented"); }
-// glReadPixels: everything recorded so far runs first (the frame's command buffer is committed and waited for), then the rows are copied out as GL lays them, bottom row first,
-// which is how this layer stores them. RGBA / unsigned byte from an RGBA8 or BGRA8 image (LÖVE's Canvas:newImageData and screenshots)
+// Read back pixel rows in GL's order, which matches the storage order of this layer.
+static void read_texture(id<MTLTexture> src, int level, int slice, MTLRegion region, GLenum format, GLenum type, void *data, const char *fn) {
+    if (!region.size.width || !region.size.height || (!data && !S.pack_buf)) return;
+    NSUInteger pf = src.pixelFormat;
+    size_t bytes = 0;
+    int bgra = pf == MTLPixelFormatBGRA8Unorm;
+    if (type == GL_UNSIGNED_BYTE) {
+        if (format == GL_RGBA && (pf == MTLPixelFormatRGBA8Unorm || pf == MTLPixelFormatRGBA8Unorm_sRGB || bgra)) bytes = 4;
+        else if (format == GL_RED && pf == MTLPixelFormatR8Unorm) bytes = 1;
+        else if (format == GL_RG && pf == MTLPixelFormatRG8Unorm) bytes = 2;
+    } else if (type == GL_UNSIGNED_INT) {
+        if (format == GL_RG_INTEGER && pf == MTLPixelFormatRG32Uint) bytes = 8;
+        else if (format == GL_RGBA_INTEGER && pf == MTLPixelFormatRGBA32Uint) bytes = 16;
+    }
+    if (!bytes) {
+        RED1("%s(%#x, %#x) of a %lu image not implemented", fn, format, type, (unsigned long)pf);
+        gl_error_at(GL_INVALID_OPERATION, fn); return;
+    }
+    if (region.origin.x > umax(1, (uint32_t)src.width >> level) ||
+        region.size.width > umax(1, (uint32_t)src.width >> level) - region.origin.x ||
+        region.origin.y > umax(1, (uint32_t)src.height >> level) ||
+        region.size.height > umax(1, (uint32_t)src.height >> level) - region.origin.y) {
+        gl_error_at(GL_INVALID_VALUE, fn); return;
+    }
+    size_t pitch = region.size.width * bytes;
+    size_t dp = (pitch + S.pack_align - 1) / S.pack_align * S.pack_align;
+    buf_t *pack = buf_of(S.pack_buf);
+    uintptr_t offset = (uintptr_t)data;
+    if (S.pack_buf && (!pack || !pack->mb || offset > pack->size ||
+        (region.size.height - 1) * dp + pitch > pack->size - offset)) {
+        gl_error_at(GL_INVALID_OPERATION, fn); return;
+    }
+    if (g_pend_clear.bits) clears_flush();
+    dm_gfx_enter();
+    pass_end();
+    id<MTLBuffer> out = [g_dev newBufferWithLength:pitch * region.size.height options:MTLResourceStorageModeShared];
+    if (!out) { dm_gfx_leave(); gl_error_at(GL_INVALID_OPERATION, fn); return; }
+    id<MTLCommandBuffer> cb = cb_get();
+    id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
+    [b copyFromTexture:src sourceSlice:slice sourceLevel:level sourceOrigin:region.origin sourceSize:region.size
+              toBuffer:out destinationOffset:0 destinationBytesPerRow:pitch destinationBytesPerImage:pitch * region.size.height];
+    [b endEncoding];
+    cb_commit(); [cb waitUntilCompleted];
+    dm_gfx_leave();
+    if (cb.status != MTLCommandBufferStatusCompleted) { gl_error_at(GL_INVALID_OPERATION, fn); return; }
+    uint8_t *base = pack ? (uint8_t *)pack->mb.contents + offset : data;
+    for (size_t row = 0; row < region.size.height; row++) {
+        uint8_t *d = base + row * dp; const uint8_t *s = (const uint8_t *)out.contents + row * pitch;
+        if (!bgra) memcpy(d, s, pitch);
+        else for (size_t x = 0; x < region.size.width; x++) {
+            d[4 * x] = s[4 * x + 2]; d[4 * x + 1] = s[4 * x + 1]; d[4 * x + 2] = s[4 * x]; d[4 * x + 3] = s[4 * x + 3];
+        }
+    }
+}
 typedef struct { GLint x, y; GLsizei w, h; GLenum format, type; void *data; } readpix_args;
 static void readpix_impl(const readpix_args *a) __attribute__((used));
 BIGSTUB(readpix_impl);
 static void readpix_impl(const readpix_args *a) {
     @autoreleasepool {
-        if (a->w <= 0 || a->h <= 0 || !a->data) return;
-        int lv, sl; id<MTLTexture> src = fb_color(S.read_fb, 1, &lv, &sl);
-        int bgra = src && src.pixelFormat == MTLPixelFormatBGRA8Unorm;
-        if (!src || (src.pixelFormat != MTLPixelFormatRGBA8Unorm && src.pixelFormat != MTLPixelFormatRGBA8Unorm_sRGB && !bgra) || a->format != GL_RGBA || a->type != GL_UNSIGNED_BYTE) {
-            RED1("glReadPixels(%#x, %#x) of a %lu image not implemented", a->format, a->type, src ? (unsigned long)src.pixelFormat : 0ul); return;
-        }
-        if (g_pend_clear.bits) clears_flush();
-        dm_gfx_enter();
-        pass_end();
-        size_t pitch = (size_t)a->w * 4; id<MTLBuffer> out = [g_dev newBufferWithLength:pitch * a->h options:MTLResourceStorageModeShared];
-        id<MTLCommandBuffer> cb = cb_get();
-        id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
-        [b copyFromTexture:src sourceSlice:sl sourceLevel:lv sourceOrigin:MTLOriginMake(a->x, a->y, 0) sourceSize:MTLSizeMake(a->w, a->h, 1) toBuffer:out destinationOffset:0
-            destinationBytesPerRow:pitch destinationBytesPerImage:pitch * a->h];
-        [b endEncoding];
-        cb_commit(); [cb waitUntilCompleted];
-        dm_gfx_leave();
-        size_t dp = (pitch + S.pack_align - 1) / S.pack_align * S.pack_align;
-        for (GLsizei r = 0; r < a->h; r++) {
-            uint8_t *d = (uint8_t *)a->data + r * dp; const uint8_t *s = (const uint8_t *)out.contents + r * pitch;
-            if (!bgra) memcpy(d, s, pitch);
-            else for (GLsizei x = 0; x < a->w; x++) { d[4 * x] = s[4 * x + 2]; d[4 * x + 1] = s[4 * x + 1]; d[4 * x + 2] = s[4 * x]; d[4 * x + 3] = s[4 * x + 3]; }
-        }
+        if (a->w < 0 || a->h < 0 || a->x < 0 || a->y < 0) { gl_error(GL_INVALID_VALUE); return; }
+        int level, slice; id<MTLTexture> src = fb_color(S.read_fb, 1, &level, &slice);
+        read_texture(src, level, slice, MTLRegionMake2D(a->x, a->y, a->w, a->h), a->format, a->type, a->data, "glReadPixels");
     }
 }
 GL(glReadPixels, void, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, void *data) {
     readpix_args a = {x, y, w, h, format, type, data}; ((void (*)(const readpix_args *))(const void *)readpix_impl_bs)(&a);
+}
+GLB(glGetTexImage, void, GLenum target, GLint level, GLenum format, GLenum type, void *data) {
+    if (target != GL_TEXTURE_2D) { gl_error(GL_INVALID_ENUM); return; }
+    @autoreleasepool {
+        tex_t *t = bound_tex(target);
+        if (!t || (!t->made && !tex_make(t, 0)) || !t->tex) { gl_error(GL_INVALID_OPERATION); return; }
+        if (level < 0 || level >= t->levels) { gl_error(GL_INVALID_VALUE); return; }
+        MTLRegion region = MTLRegionMake2D(0, 0, umax(1, t->w >> level), umax(1, t->h >> level));
+        read_texture(t->tex, level, 0, region, format, type, data, "glGetTexImage");
+    }
 }
 
 // ---------- Shaders and programs ----------

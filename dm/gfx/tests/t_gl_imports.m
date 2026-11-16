@@ -441,6 +441,34 @@ static void test_packed_image_copy(void) {
     assert(memcmp(out, packed, sizeof packed) == 0);
     h_glDeleteTextures(3, textures);
 }
+static void test_texture_readback(void) {
+    assert(import("glGetTexImage") == (void *)h_glGetTexImage_bs);
+    assert(h_eglGetProcAddress("glGetTexImage") == (void *)h_glGetTexImage_bs);
+    GLuint fb, tex[2]; h_glGenFramebuffers(1, &fb); h_glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    h_glGenTextures(2, tex); h_glBindTexture(GL_TEXTURE_2D, tex[0]);
+    h_glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 1, 2);
+    h_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[0], 0);
+    h_glClearColor(1, 0, 1, 1); h_glClear(GL_COLOR_BUFFER_BIT);
+    h_glPixelStorei(GL_PACK_ALIGNMENT, 8);
+    uint8_t readback[16] = {0};
+    h_glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, readback);
+    const uint8_t expected[] = {255, 0, 255, 255, 0, 0, 0, 0, 255, 0, 255, 255, 0, 0, 0, 0};
+    assert(memcmp(readback, expected, sizeof expected) == 0);
+    h_glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    h_glBindFramebuffer(GL_FRAMEBUFFER, 0); h_glDeleteFramebuffers(1, &fb);
+
+    const uint32_t words[] = {0x1ead1234, 0x42abbeef, 0x12345678, 0x76543210};
+    h_glBindTexture(GL_TEXTURE_2D, tex[1]);
+    h_glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32UI, 2, 1, 0, GL_RG_INTEGER, GL_UNSIGNED_INT, words);
+    GLuint pbo; h_glGenBuffers(1, &pbo); h_glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+    h_glBufferData(GL_PIXEL_PACK_BUFFER, 24, NULL, 0);
+    h_glGetTexImage(GL_TEXTURE_2D, 0, GL_RG_INTEGER, GL_UNSIGNED_INT, (void *)8);
+    const uint32_t *mapped = h_glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 24, 1);
+    assert(mapped && mapped[0] == 0 && mapped[1] == 0 && memcmp(mapped + 2, words, sizeof words) == 0);
+    assert(h_glUnmapBuffer(GL_PIXEL_PACK_BUFFER));
+    h_glDeleteBuffers(1, &pbo); assert(!S.pack_buf);
+    h_glDeleteTextures(2, tex);
+}
 static void test_timer_queries(void) {
     GLuint names[3];
     assert(import("glGenQueries") == (void *)h_glGenQueries);
@@ -575,6 +603,7 @@ int main(int argc, char **argv) {
     test_integer_instanced_vertex_fetch();
     test_integer_color_clear();
     test_packed_image_copy();
+    test_texture_readback();
     test_timer_queries();
 
     unsigned long sz;
@@ -594,6 +623,6 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, integer clears, packed texture copies, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, named uniform block and sampler draws, multiple color attachments, integer vertex fetch, integer clears, packed texture copies, texture readback, GPU timer queries, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }
