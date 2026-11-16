@@ -5,7 +5,11 @@
 - Title ID: `0100BC501355A000`. Version 1.0.0, main build ID `72556bdf87ff54ea037a56370036d49b`.
 - Unreal Engine with NVN and Nintendo SDK 9.3.1. The provisional profile loads `main`, `subsdk0` (NintendoSDK_movie), and `sdk`.
 - The base archive passed full extraction and RomFS integrity checking. The RomFS contains 17 version 8 Unreal paks with 98,233 index entries total. The global Switch shader cache is in chunk 0.
-- Native gameplay validation is pending on Mac and iOS.
+- The static shader split found 5,922 shaders. Native gameplay validation is pending on Mac and iOS.
+
+## Open iOS address-space issue
+
+The Mac probe observed a 62 GiB engine reservation returning to `main+0x60b9a0`. The provisional iPhone alias region is 4.375 GiB. The rewriter located the engine region size store at `main+0x60b998` and the `FMallocBinned3` vtable at `main+0x4966a70`, but its name getter is slot 17, an unsupported vtable layout. Identify the allocator method slots and constructor call before extending the host substitution. Re-run the reduced-alias boot check before packaging for the Duo.
 
 ## English localization
 
